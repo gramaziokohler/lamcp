@@ -16,6 +16,11 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.7",
+]
+
 [project.scripts]
 lamcp = "lamcp.server:main"
 

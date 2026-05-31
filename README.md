@@ -140,6 +140,33 @@ The bridge listens on `127.0.0.1` only and accepts no auth: it runs
 arbitrary Python in your Rhino with no sandboxing. **Never expose it
 beyond localhost**, and stop it (`enable=False`) when you're done.
 
+## Development
+
+Install with the `dev` extra to pull in `ruff`:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Lint + format checks (same commands CI runs):
+
+```bash
+ruff check .                # lint
+ruff format --check .       # formatting (non-destructive)
+```
+
+Auto-fix:
+
+```bash
+ruff check . --fix          # fix lint issues
+ruff format .               # reformat
+```
+
+For one-off runs without installing into your env, `uvx ruff ...` works
+identically.
+
+Releases are tag-driven — see [RELEASING.md](RELEASING.md).
+
 ## License
 
 MIT
