@@ -97,7 +97,9 @@ class _ExecHandler(BaseHTTPRequestHandler):
 
 def _start_server(port):
     server = HTTPServer(("127.0.0.1", port), _ExecHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True, name="lamcp-bridge")
+    thread = threading.Thread(
+        target=server.serve_forever, daemon=True, name="lamcp-bridge"
+    )
     thread.start()
     return {"server": server, "thread": thread, "port": port}
 
@@ -123,7 +125,11 @@ class LamcpBridgeComponent(Grasshopper.Kernel.GH_ScriptInstance):
             return "stopped"
 
         # Already running on the requested port: no-op.
-        if state is not None and state.get("port") == port and state["thread"].is_alive():
+        if (
+            state is not None
+            and state.get("port") == port
+            and state["thread"].is_alive()
+        ):
             return "listening on http://127.0.0.1:{}".format(port)
 
         # Port changed or server died: tear down and restart.
