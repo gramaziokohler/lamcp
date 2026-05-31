@@ -1,0 +1,88 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - uses: actions/upload-artifact@v5
+        with:
+          name: python-dist
+          path: dist/*
+          if-no-files-found: error
+
+  build-ghpython-component:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build Lamcp_Bridge.ghuser
+        uses: compas-dev/compas-actions.ghpython_components@v5
+        with:
+          source: grasshopper
+          target: dist/ghuser
+          interpreter: cpython
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ghpython-dist
+          path: dist/ghuser/*.ghuser
+          if-no-files-found: error
+
+  publish-pypi:
+    # Only publish on actual tag pushes, not on workflow_dispatch.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-python
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/lamcp
+    permissions:
+      id-token: write   # required for OIDC trusted publishing
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: python-dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-python, build-ghpython-component, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v5
+        with:
+          name: python-dist
+          path: dist/
+      - uses: actions/download-artifact@v5
+        with:
+          name: ghpython-dist
+          path: dist/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/*.ghuser
+          generate_release_notes: true
+          body: |
+            Install the Python MCP server: `pip install lamcp==${{ github.ref_name }}` (drop the leading `v`).
+
+            For Rhino 8 / Grasshopper users: download `Lamcp_Bridge.ghuser` below and drop it into your Grasshopper Libraries folder
+            (Grasshopper menu → File → Special Folders → Components Folder).

@@ -1,0 +1,30 @@
+{
+    "name": "LAMCP Bridge",
+    "nickname": "LAMCP",
+    "category": "LAMCP",
+    "subcategory": "Bridge",
+    "description": "Local HTTP bridge that lets the LAMCP MCP server execute Python inside this Rhino instance. Binds to 127.0.0.1 only — never expose beyond localhost.",
+    "exposure": 4,
+    "ghpython": {
+        "isAdvancedMode": true,
+        "iconDisplay": 2,
+        "inputParameters": [
+            {
+                "name": "enable",
+                "description": "Toggle to start (True) or stop (False) the local HTTP server.",
+                "typeHintID": "bool"
+            },
+            {
+                "name": "port",
+                "description": "Port to listen on (loopback only). Defaults to 8765.",
+                "typeHintID": "int"
+            }
+        ],
+        "outputParameters": [
+            {
+                "name": "status",
+                "description": "Current server status string."
+            }
+        ]
+    }
+}

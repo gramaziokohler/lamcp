@@ -1,0 +1,47 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . ruff
+      - name: Lint
+        run: ruff check .
+      - name: Format check
+        run: ruff format --check .
+      - name: Import smoke test
+        run: |
+          python -c "from lamcp.server import mcp, run_python_script, bridge_health, unload_python_modules"
+
+  build-ghpython-component:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build Lamcp_Bridge.ghuser
+        uses: compas-dev/compas-actions.ghpython_components@v5
+        with:
+          source: grasshopper
+          target: dist/ghuser
+          interpreter: cpython
+      - uses: actions/upload-artifact@v5
+        with:
+          name: Lamcp_Bridge-ghuser
+          path: dist/ghuser/*.ghuser
+          if-no-files-found: error
