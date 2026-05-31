@@ -13,6 +13,20 @@ Architecture::
 
 The bridge URL is read from the ``LAMCP_BRIDGE_URL`` env var
 (default ``http://127.0.0.1:8765``).
+
+Thread-safety (READ THIS before adding a tool that mutates the document)
+------------------------------------------------------------------------
+The bridge ``exec()``s our code on its own HTTP **server thread**, which is
+*not* Rhino's UI thread. RhinoCommon / Grasshopper object mutation is not
+thread-safe: setting a component's ``Text``/``LanguageSpec``, adding or removing
+objects, expiring solutions, or saving the document from the HTTP thread can
+**hard-crash the entire Rhino process** (not merely tear the bridge down).
+Disabling the solver does NOT prevent this — the crash is the cross-thread
+mutation itself. Every tool here that mutates the document therefore wraps its
+work in :data:`_UI_THREAD_BOOTSTRAP` and runs it through ``_lamcp_run_on_ui`` so
+the mutation happens on the UI thread. Read-only tools
+(:func:`list_grasshopper_objects`, :func:`run_python_script` callers that only
+read) do not need it.
 """
 
 from __future__ import annotations
@@ -33,6 +47,42 @@ DEFAULT_TIMEOUT = 30.0
 _SCRIPT_COMPONENT_GUID = "c9b2d725-6f87-4b07-af90-bd9aefef68eb"  # the component type
 _SCRIPT_PARAM_GUID = "08908df5-fa14-4982-9ab2-1aa0927566aa"  # script variable param
 _TYPEHINT_OBJECT_GUID = "1c282eeb-dd16-439f-94e4-7d92b542fe8b"  # "Object" type hint
+
+# Code prepended to every document-mutating snippet. It defines
+# ``_lamcp_run_on_ui(fn, timeout)``, which runs ``fn()`` on Rhino's UI thread
+# and blocks the (HTTP) caller until it finishes, returning ``fn``'s result.
+#
+# WHY THIS EXISTS — DO NOT REMOVE: the bridge exec()s us on its HTTP server
+# thread, not Rhino's UI thread, and cross-thread GH/RhinoCommon mutation
+# HARD-CRASHES Rhino (see the module docstring). ``RhinoApp.InvokeOnUiThread``
+# marshals the delegate onto the UI thread (where ``RhinoApp.InvokeRequired`` is
+# False); a ``threading.Event`` lets the HTTP thread wait for completion so the
+# tool still returns synchronously. We deliberately use ``InvokeOnUiThread``
+# rather than ``ScheduleSolution`` as the marshaller because the latter forces a
+# solve — with this primitive the caller's ``fn`` decides whether to expire and
+# schedule, so ``solve=False`` is honoured.
+_UI_THREAD_BOOTSTRAP = (
+    "import Rhino, System, threading, traceback\n"
+    "def _lamcp_run_on_ui(fn, timeout=20.0):\n"
+    "    box = {'result': None, 'error': None}\n"
+    "    ev = threading.Event()\n"
+    "    def _action():\n"
+    "        try:\n"
+    "            box['result'] = fn()\n"
+    "        except Exception:\n"
+    "            box['error'] = traceback.format_exc()\n"
+    "        finally:\n"
+    "            ev.set()\n"
+    "    if Rhino.RhinoApp.InvokeRequired:\n"
+    "        Rhino.RhinoApp.InvokeOnUiThread(System.Action(_action))\n"
+    "        if not ev.wait(timeout):\n"
+    "            raise Exception('UI-thread operation timed out after %ss' % timeout)\n"
+    "    else:\n"
+    "        _action()\n"
+    "    if box['error'] is not None:\n"
+    "        raise Exception('UI-thread operation failed:\\n' + box['error'])\n"
+    "    return box['result']\n"
+)
 
 mcp = FastMCP("lamcp")
 
@@ -381,23 +431,27 @@ def add_python_component(
     xml = _build_script_component_xml(code, name, inputs, outputs, x, y)
     xml_b64 = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     snippet = (
-        "import base64, System\n"
+        _UI_THREAD_BOOTSTRAP + "import base64, System\n"
         "import Grasshopper as gh\n"
         "import GH_IO.Serialization as ser\n"
         "xml = base64.b64decode('%s').decode('utf-8')\n"
         % xml_b64
-        + "doc = gh.Instances.ActiveCanvas.Document\n"
-        "chunk = ser.GH_LooseChunk('ScriptComp')\n"
-        "chunk.Deserialize_Xml(xml)\n"
-        "comp = gh.Instances.ComponentServer.EmitObject(System.Guid('%s'))\n"
-        % _SCRIPT_COMPONENT_GUID
-        + "if comp is None:\n"
-        "    raise Exception('Could not instantiate the Rhino 8 Python 3 script component')\n"
-        "ok = comp.Read(chunk)\n"
-        "added = doc.AddObject(comp, False)\n"
-        "if %s:\n" % bool(solve) + "    comp.ExpireSolution(False)\n"
-        "    doc.ScheduleSolution(50)\n"
-        "_ = {'added': added, 'read_ok': ok, 'guid': str(comp.InstanceGuid), 'name': comp.NickName}\n"
+        + "SOLVE = %s\n" % bool(solve)
+        + "COMP_GUID = '%s'\n" % _SCRIPT_COMPONENT_GUID
+        + "def _do():\n"
+        "    doc = gh.Instances.ActiveCanvas.Document\n"
+        "    chunk = ser.GH_LooseChunk('ScriptComp')\n"
+        "    chunk.Deserialize_Xml(xml)\n"
+        "    comp = gh.Instances.ComponentServer.EmitObject(System.Guid(COMP_GUID))\n"
+        "    if comp is None:\n"
+        "        raise Exception('Could not instantiate the Rhino 8 Python 3 script component')\n"
+        "    ok = comp.Read(chunk)\n"
+        "    added = doc.AddObject(comp, False)\n"
+        "    if SOLVE:\n"
+        "        comp.ExpireSolution(False)\n"
+        "        doc.ScheduleSolution(50)\n"
+        "    return {'added': added, 'read_ok': ok, 'guid': str(comp.InstanceGuid), 'name': comp.NickName}\n"
+        "_ = _lamcp_run_on_ui(_do)\n"
     )
     return run_python_script(snippet)
 
@@ -476,15 +530,22 @@ def set_script_venv(
     parameters and reconnects them to a phantom source at the origin, leaving a
     ghost component on the canvas. This avoids that entirely.
 
-    Solver safety: setting the text expires the component, which would schedule
-    a solution; with many edits one of those solutions re-runs the LAMCP Bridge
-    component on its own HTTP thread and tears the server down mid-request. So
-    the whole batch runs with ``doc.Enabled = False`` (no solves fire during
-    editing), the solver is restored afterwards, and recompute is requested via
-    ``ScheduleSolution`` on the UI thread (the same decoupling as
-    :func:`solve_grasshopper`). The bridge component is always skipped (matched
-    by the ``LAMCP Bridge`` marker in its source) so it is never repointed or
-    torn down.
+    Thread + solver safety: the whole edit runs on the UI thread via
+    ``_lamcp_run_on_ui`` — mutating ``Text``/``LanguageSpec`` from the bridge's
+    HTTP thread hard-crashes Rhino (see the module docstring). Within that
+    UI-thread call the batch is wrapped in ``doc.Enabled = False`` … restore (no
+    intermediate solves fire while editing), and recompute is requested once via
+    ``ScheduleSolution`` only when ``solve`` is true. Setting ``Text`` also
+    resets the component's language taxon to ``*.*.*`` ("Can not determine input
+    code language"), so the ``LanguageSpec`` is captured and restored around each
+    ``Text`` write. The bridge component is always skipped (matched by the
+    ``LAMCP Bridge`` marker in its source) so it is never repointed or torn down.
+
+    Components are matched by ``GetType().FullName`` ending in either
+    ``Python3Component`` *or* ``ScriptComponent`` — a reopened/saved document
+    reports its script components as the latter. The ``Text``/``LanguageSpec``
+    properties are explicit-interface implementations (non-public), so they are
+    found by walking ``BaseType`` with ``BindingFlags.NonPublic``.
 
     Parameters
     ----------
@@ -515,7 +576,7 @@ def set_script_venv(
     only_nn = None if only_nicknames is None else list(only_nicknames)
     only_g = None if only_guids is None else list(only_guids)
     code = (
-        "import re\n"
+        _UI_THREAD_BOOTSTRAP + "import re\n"
         "import Grasshopper as gh\n"
         "from System.Reflection import BindingFlags\n"
         "TARGET = %r\n"
@@ -545,59 +606,61 @@ def set_script_venv(
         "    prop.SetValue(obj, new_txt)\n"
         "    if lp is not None and spec is not None:\n"
         "        lp.SetValue(obj, spec)\n"
-        "doc = gh.Instances.ActiveCanvas.Document\n"
-        "changed = []; added = []; already = 0; skipped = []; errors = []\n"
-        "changed_objs = []\n"
-        "prev_enabled = doc.Enabled\n"
-        "doc.Enabled = False\n"
-        "try:\n"
-        "    for obj in doc.Objects:\n"
-        "        tn = obj.GetType().FullName\n"
-        "        if not (tn.endswith('Python3Component') or tn.endswith('ScriptComponent')):\n"
-        "            continue\n"
-        "        if ONLY_NN is not None or ONLY_G is not None:\n"
-        "            ok = (ONLY_NN is not None and obj.NickName in ONLY_NN) or \\\n"
-        "                 (ONLY_G is not None and str(obj.InstanceGuid) in ONLY_G)\n"
-        "            if not ok:\n"
+        "def _do():\n"
+        "    doc = gh.Instances.ActiveCanvas.Document\n"
+        "    changed = []; added = []; already = 0; skipped = []; errors = []\n"
+        "    changed_objs = []\n"
+        "    prev_enabled = doc.Enabled\n"
+        "    doc.Enabled = False\n"
+        "    try:\n"
+        "        for obj in doc.Objects:\n"
+        "            tn = obj.GetType().FullName\n"
+        "            if not (tn.endswith('Python3Component') or tn.endswith('ScriptComponent')):\n"
         "                continue\n"
-        "        prop = text_prop(obj)\n"
-        "        if prop is None:\n"
-        "            continue\n"
-        "        try:\n"
-        "            txt = prop.GetValue(obj)\n"
-        "        except Exception as e:\n"
-        "            errors.append((obj.NickName, repr(e))); continue\n"
-        "        if txt is None:\n"
-        "            continue\n"
-        "        if 'LAMCP Bridge' in txt:\n"
-        "            skipped.append((obj.NickName, 'bridge component')); continue\n"
-        "        m = venv_re.search(txt)\n"
-        "        if m:\n"
-        "            if m.group(2) == TARGET:\n"
-        "                already += 1; continue\n"
-        "            prev = m.group(2)\n"
-        "            new_txt = venv_re.sub(lambda mm: mm.group(1) + TARGET + mm.group(3), txt, 1)\n"
+        "            if ONLY_NN is not None or ONLY_G is not None:\n"
+        "                ok = (ONLY_NN is not None and obj.NickName in ONLY_NN) or \\\n"
+        "                     (ONLY_G is not None and str(obj.InstanceGuid) in ONLY_G)\n"
+        "                if not ok:\n"
+        "                    continue\n"
+        "            prop = text_prop(obj)\n"
+        "            if prop is None:\n"
+        "                continue\n"
         "            try:\n"
-        "                set_text_keep_lang(obj, prop, new_txt)\n"
-        "                changed.append((obj.NickName, prev)); changed_objs.append(obj)\n"
+        "                txt = prop.GetValue(obj)\n"
         "            except Exception as e:\n"
-        "                errors.append((obj.NickName, repr(e)))\n"
-        "        elif ADD_IF_MISSING:\n"
-        "            try:\n"
-        "                set_text_keep_lang(obj, prop, '# venv: ' + TARGET + '\\n' + txt)\n"
-        "                added.append(obj.NickName); changed_objs.append(obj)\n"
-        "            except Exception as e:\n"
-        "                errors.append((obj.NickName, repr(e)))\n"
-        "        else:\n"
-        "            skipped.append((obj.NickName, 'no venv directive'))\n"
-        "finally:\n"
-        "    doc.Enabled = prev_enabled\n"
-        "if DO_SOLVE and changed_objs:\n"
-        "    for obj in changed_objs:\n"
-        "        obj.ExpireSolution(False)\n"
-        "    doc.ScheduleSolution(50)\n"
-        "_ = {'target': TARGET, 'changed': changed, 'added': added,\n"
-        "     'already_ok': already, 'skipped': skipped, 'errors': errors}\n"
+        "                errors.append((obj.NickName, repr(e))); continue\n"
+        "            if txt is None:\n"
+        "                continue\n"
+        "            if 'LAMCP Bridge' in txt:\n"
+        "                skipped.append((obj.NickName, 'bridge component')); continue\n"
+        "            m = venv_re.search(txt)\n"
+        "            if m:\n"
+        "                if m.group(2) == TARGET:\n"
+        "                    already += 1; continue\n"
+        "                prev = m.group(2)\n"
+        "                new_txt = venv_re.sub(lambda mm: mm.group(1) + TARGET + mm.group(3), txt, 1)\n"
+        "                try:\n"
+        "                    set_text_keep_lang(obj, prop, new_txt)\n"
+        "                    changed.append((obj.NickName, prev)); changed_objs.append(obj)\n"
+        "                except Exception as e:\n"
+        "                    errors.append((obj.NickName, repr(e)))\n"
+        "            elif ADD_IF_MISSING:\n"
+        "                try:\n"
+        "                    set_text_keep_lang(obj, prop, '# venv: ' + TARGET + '\\n' + txt)\n"
+        "                    added.append(obj.NickName); changed_objs.append(obj)\n"
+        "                except Exception as e:\n"
+        "                    errors.append((obj.NickName, repr(e)))\n"
+        "            else:\n"
+        "                skipped.append((obj.NickName, 'no venv directive'))\n"
+        "    finally:\n"
+        "        doc.Enabled = prev_enabled\n"
+        "    if DO_SOLVE and changed_objs:\n"
+        "        for obj in changed_objs:\n"
+        "            obj.ExpireSolution(False)\n"
+        "        doc.ScheduleSolution(50)\n"
+        "    return {'target': TARGET, 'changed': changed, 'added': added,\n"
+        "            'already_ok': already, 'skipped': skipped, 'errors': errors}\n"
+        "_ = _lamcp_run_on_ui(_do)\n"
     )
     return run_python_script(code)
 
@@ -606,11 +669,12 @@ def set_script_venv(
 def solve_grasshopper(expire_all: bool = False) -> dict:
     """Re-solve the active Grasshopper document, safely.
 
-    The solution is always scheduled on Grasshopper's UI thread via
-    ``ScheduleSolution`` rather than run synchronously. This matters: the
-    bridge ``exec()``s on its own HTTP server thread, and a synchronous full
-    solve (``NewSolution``) re-runs the bridge component on that very thread,
-    tearing the server down mid-request. Scheduling decouples the two.
+    The expire + schedule run on the UI thread via ``_lamcp_run_on_ui``, and the
+    solution itself is requested with ``ScheduleSolution`` rather than run
+    synchronously. Both matter: the bridge ``exec()``s on its own HTTP server
+    thread, so expiring objects from there is an unsafe cross-thread mutation,
+    and a synchronous full solve (``NewSolution``) would re-run the bridge
+    component on that very thread, tearing the server down mid-request.
 
     Parameters
     ----------
@@ -624,14 +688,16 @@ def solve_grasshopper(expire_all: bool = False) -> dict:
         Same envelope as :func:`run_python_script`.
     """
     code = (
-        "import Grasshopper as gh\n"
-        "doc = gh.Instances.ActiveCanvas.Document\n"
-        "expire_all = %s\n" % bool(expire_all) + "if expire_all:\n"
-        "    for o in doc.Objects:\n"
-        "        if hasattr(o, 'ExpireSolution'):\n"
-        "            o.ExpireSolution(False)\n"
-        "doc.ScheduleSolution(50)\n"
-        "_ = {'scheduled': True, 'expired_all': expire_all}\n"
+        _UI_THREAD_BOOTSTRAP + "import Grasshopper as gh\n"
+        "expire_all = %s\n" % bool(expire_all) + "def _do():\n"
+        "    doc = gh.Instances.ActiveCanvas.Document\n"
+        "    if expire_all:\n"
+        "        for o in doc.Objects:\n"
+        "            if hasattr(o, 'ExpireSolution'):\n"
+        "                o.ExpireSolution(False)\n"
+        "    doc.ScheduleSolution(50)\n"
+        "    return {'scheduled': True, 'expired_all': expire_all}\n"
+        "_ = _lamcp_run_on_ui(_do)\n"
     )
     return run_python_script(code)
 
@@ -653,20 +719,21 @@ def save_grasshopper_document(path: str | None = None) -> dict:
         ``{"saved", "path", "bytes", "error"}``.
     """
     code = (
-        "import os\n"
+        _UI_THREAD_BOOTSTRAP + "import os\n"
         "import Grasshopper as gh\n"
-        "doc = gh.Instances.ActiveCanvas.Document\n"
-        "path = %r or doc.FilePath\n"
-        % path
-        + "saved = False; size = None; err = None\n"
-        "try:\n"
-        "    io = gh.Kernel.GH_DocumentIO(doc)\n"
-        "    saved = io.SaveQuiet(path)\n"
-        "    if path and os.path.exists(path):\n"
-        "        size = os.path.getsize(path)\n"
-        "except Exception as exc:\n"
-        "    err = repr(exc)\n"
-        "_ = {'saved': saved, 'path': path, 'bytes': size, 'error': err}\n"
+        "PATH = %r\n" % path + "def _do():\n"
+        "    doc = gh.Instances.ActiveCanvas.Document\n"
+        "    path = PATH or doc.FilePath\n"
+        "    saved = False; size = None; err = None\n"
+        "    try:\n"
+        "        io = gh.Kernel.GH_DocumentIO(doc)\n"
+        "        saved = io.SaveQuiet(path)\n"
+        "        if path and os.path.exists(path):\n"
+        "            size = os.path.getsize(path)\n"
+        "    except Exception as exc:\n"
+        "        err = repr(exc)\n"
+        "    return {'saved': saved, 'path': path, 'bytes': size, 'error': err}\n"
+        "_ = _lamcp_run_on_ui(_do)\n"
     )
     return run_python_script(code)
 

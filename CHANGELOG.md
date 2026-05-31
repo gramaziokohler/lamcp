@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.4.1] - 2026-05-31
+
+### Fixed
+
+* All document-mutating tools (`set_script_venv`, `solve_grasshopper`,
+  `add_python_component`, `save_grasshopper_document`) now run their mutation on
+  Rhino's UI thread via `RhinoApp.InvokeOnUiThread` (new `_UI_THREAD_BOOTSTRAP`
+  helper). The bridge `exec()`s on its own HTTP server thread, and mutating GH
+  components (`Text`/`LanguageSpec`), adding objects, expiring solutions, or
+  saving from that thread is not thread-safe and **hard-crashes the whole Rhino
+  process**. Disabling the solver did not prevent this — the crash was the
+  cross-thread mutation itself, which `set_script_venv` previously did directly.
+  The helper marshals the work onto the UI thread and uses a `threading.Event`
+  so the tools still return synchronously, and (unlike `ScheduleSolution`) does
+  not force a solve, so `solve=False` is honoured.
+
 ## [0.4.0] - 2026-05-31
 
 ### Added
