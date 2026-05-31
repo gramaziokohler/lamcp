@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.0] - 2026-05-31
+
+### Added
+
+* `add_reloader_component(x, y, solve)` — drop the COMPAS side-by-side
+  hot-reload bootstrap (a single-output component that runs
+  `DevTools.enable_reloader()`). Pair it with consumer components that start
+  with `DevTools.ensure_path()` before importing side-car modules.
+
+### Fixed
+
+* `add_python_component` now raises on an empty `outputs` list instead of
+  inserting a zero-output script component, which hard-crashes Rhino during
+  attribute layout when built via `EmitObject` + `AddObject` (the GH UI path
+  initialises such a component differently and survives).
+
 ## [0.2.0] - 2026-05-31
 
 ### Added

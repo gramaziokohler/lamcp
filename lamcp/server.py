@@ -336,10 +336,12 @@ def add_python_component(
             def RunScript(self, a, b):
                 return a + b
 
-    To import a ``.py`` module that lives next to the saved ``.gh`` file (with
-    live reload), start the code with the ``# r: compas`` requirement and call
-    ``compas_rhino.devtools.DevTools.enable_reloader()`` inside ``RunScript``
-    before importing it; the document must be saved for that to resolve.
+    To import a ``.py`` module that lives next to the saved ``.gh`` file with
+    live reload, use the two-part COMPAS pattern: call
+    :func:`add_reloader_component` once per document to start the watcher, then
+    have each consumer component begin with ``from compas_rhino import DevTools``
+    / ``DevTools.ensure_path()`` before importing the side-car module. The
+    document must be saved for the folder to be discoverable.
 
     Parameters
     ----------
@@ -366,8 +368,16 @@ def add_python_component(
         Same envelope as :func:`run_python_script`; ``result`` reprs
         ``{"added", "read_ok", "guid", "name"}``.
     """
-    inputs = list(inputs or [])
-    outputs = list(outputs or ["a"])
+    inputs = [] if inputs is None else list(inputs)
+    outputs = ["a"] if outputs is None else list(outputs)
+    if not outputs:
+        # A zero-output script component built via EmitObject + AddObject hard
+        # crashes Rhino during attribute layout (the GH UI path initializes it
+        # differently and survives). Refuse rather than take Rhino down.
+        raise ValueError(
+            "add_python_component requires at least one output; a zero-output "
+            "script component crashes Rhino when inserted via this API."
+        )
     xml = _build_script_component_xml(code, name, inputs, outputs, x, y)
     xml_b64 = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     snippet = (
@@ -390,6 +400,57 @@ def add_python_component(
         "_ = {'added': added, 'read_ok': ok, 'guid': str(comp.InstanceGuid), 'name': comp.NickName}\n"
     )
     return run_python_script(snippet)
+
+
+@mcp.tool()
+def add_reloader_component(x: int = 60, y: int = 130, solve: bool = True) -> dict:
+    """Add the COMPAS side-by-side hot-reload bootstrap component.
+
+    Drops a small, parameterless Python 3 script component that runs
+    ``compas_rhino.devtools.DevTools.enable_reloader()``. Solving it once
+    appends the saved ``.gh`` file's folder to ``sys.path`` and starts a
+    ``FileSystemWatcher`` that drops a side-car module from ``sys.modules``
+    whenever its ``.py`` file changes — so edits hot-reload on the next solve.
+
+    This is half of the COMPAS side-car workflow: add this once per document,
+    then have each *consumer* component start with ``from compas_rhino import
+    DevTools`` / ``DevTools.ensure_path()`` before importing the side-car
+    module (see :func:`add_python_component`).
+
+    The document must already be saved — ``enable_reloader`` needs a folder to
+    watch and raises otherwise. Adding a second bootstrap component is harmless
+    but redundant; check :func:`list_grasshopper_objects` first if unsure.
+
+    Built as a single-output ``Script_Instance`` (returning a status string)
+    rather than a parameterless component: a zero-output component inserted via
+    this API crashes Rhino during layout.
+
+    Parameters
+    ----------
+    x, y : int, optional
+        Canvas pivot for the bootstrap component.
+    solve : bool, optional
+        If true (default), solve it immediately so the watcher starts now.
+
+    Returns
+    -------
+    dict
+        Same envelope as :func:`add_python_component`.
+    """
+    code = (
+        "# r: compas\n"
+        "import Grasshopper\n"
+        "from compas_rhino.devtools import DevTools\n"
+        "\n"
+        "\n"
+        "class Script_Instance(Grasshopper.Kernel.GH_ScriptInstance):\n"
+        "    def RunScript(self):\n"
+        "        DevTools.enable_reloader()\n"
+        "        return 'COMPAS side-by-side reloader enabled'\n"
+    )
+    return add_python_component(
+        code, name="Enable reload", inputs=[], outputs=["status"], x=x, y=y, solve=solve
+    )
 
 
 @mcp.tool()

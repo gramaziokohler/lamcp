@@ -125,9 +125,10 @@ exec()s code inside your live Rhino session.
 | `unload_python_modules`     | drop `sys.modules[prefix.*]` so the next import re-reads from disk       |
 | `bridge_health`             | ping the bridge to verify it's reachable                                 |
 | `list_grasshopper_objects`  | enumerate canvas objects (type, nickname, GUID, pivot, runtime messages) |
-| `add_python_component`      | drop a Rhino 8 Python 3 script component (code + I/O params) onto canvas  |
-| `solve_grasshopper`         | re-solve safely via `ScheduleSolution` on the UI thread                   |
-| `save_grasshopper_document` | save the active document to disk                                          |
+| `add_python_component`      | drop a Rhino 8 Python 3 script component (code + I/O params) onto canvas |
+| `add_reloader_component`    | drop the COMPAS side-by-side hot-reload bootstrap (`enable_reloader()`)  |
+| `solve_grasshopper`         | re-solve safely via `ScheduleSolution` on the UI thread                  |
+| `save_grasshopper_document` | save the active document to disk                                         |
 
 ### Return contract for `run_python_script`
 
