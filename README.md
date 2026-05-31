@@ -27,44 +27,42 @@ living inside Rhino as a regular Grasshopper component.
 
 ## Setup
 
-### 1. Install the MCP server
+### 1. Register with Claude Code
+
+The friction-free path uses [`uvx`](https://docs.astral.sh/uv/) so no
+explicit install of `lamcp` is needed — it'll be fetched and cached on
+first invocation:
 
 ```bash
-git clone https://github.com/gramaziokohler/lamcp.git
-cd lamcp
-uv pip install -e .
-# or: pip install -e .
+claude mcp add lamcp -- uvx lamcp
 ```
 
-### 2. Register with Claude Code (or whatever LLM you use)
+Or, if you'd rather install `lamcp` into your environment first:
 
-Add to `~/.claude.json`:
-
-```json
-{
-  "mcpServers": {
-    "lamcp": {
-      "command": "lamcp"
-    }
-  }
-}
+```bash
+pip install lamcp     # or: uv tool install lamcp
+claude mcp add lamcp -- lamcp
 ```
 
-If `lamcp` isn't on `PATH`, use the absolute path to the venv's script:
+To scope the registration to a single project (writes a `.mcp.json` in
+the repo, checked into git so collaborators get it too):
 
-```json
-{
-  "mcpServers": {
-    "lamcp": {
-      "command": "/absolute/path/to/.venv/bin/lamcp"
-    }
-  }
-}
+```bash
+claude mcp add lamcp --scope project -- uvx lamcp
 ```
 
-Restart Claude Code so it discovers the new MCP server.
+Verify:
 
-### 3. Install the bridge in Grasshopper
+```bash
+claude mcp list
+```
+
+The new tools are available in any new Claude Code conversation.
+
+> Using a different MCP client? Point it at the `lamcp` command (or
+> `uvx lamcp`) over stdio.
+
+### 2. Install the bridge in Grasshopper
 
 **Option A — drop the pre-built userobject (recommended).**
 
