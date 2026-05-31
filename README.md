@@ -1,8 +1,8 @@
 # LAMCP
 
 [![PyPI version](https://img.shields.io/pypi/v/lamcp.svg)](https://pypi.org/project/lamcp/)
-[![Python versions](https://img.shields.io/pypi/pyversions/lamcp.svg)](https://pypi.org/project/lamcp/)
-[![License: MIT](https://img.shields.io/pypi/l/lamcp.svg)](LICENSE)
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/lamcp)
+[![License: MIT](https://img.shields.io/pypi/l/lamcp)](LICENSE)
 [![Build](https://img.shields.io/github/actions/workflow/status/gramaziokohler/lamcp/build.yml?branch=main&label=build)](https://github.com/gramaziokohler/lamcp/actions/workflows/build.yml)
 
 **LA**mbda **MCP**: teach your LLM to do Grasshopper tricks.
