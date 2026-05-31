@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.4.0] - 2026-05-31
+
+### Added
+
+* `set_script_venv(venv, only_nicknames, only_guids, add_if_missing, solve)` —
+  rewrite the `# venv:` directive on every Python 3 / script component in the
+  active document so they all point at one environment. Mutates only the
+  script body (via reflection on `IScriptComponent.Text`) so wiring stays
+  intact; round-tripping through `GH_LooseChunk` Write/Read would
+  re-deserialize the input params and leave a ghost source at the origin.
+  Disables the solver during the batch and re-schedules a single solution
+  afterwards so cascading solves don't tear the LAMCP Bridge component down
+  mid-request. The bridge itself is skipped by source marker.
+
 ## [0.3.0] - 2026-05-31
 
 ### Added

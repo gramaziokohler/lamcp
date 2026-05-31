@@ -127,6 +127,7 @@ exec()s code inside your live Rhino session.
 | `list_grasshopper_objects`  | enumerate canvas objects (type, nickname, GUID, pivot, runtime messages) |
 | `add_python_component`      | drop a Rhino 8 Python 3 script component (code + I/O params) onto canvas |
 | `add_reloader_component`    | drop the COMPAS side-by-side hot-reload bootstrap (`enable_reloader()`)  |
+| `set_script_venv`           | repoint `# venv:` directive of script components at one environment      |
 | `solve_grasshopper`         | re-solve safely via `ScheduleSolution` on the UI thread                  |
 | `save_grasshopper_document` | save the active document to disk                                         |
 

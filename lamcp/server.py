@@ -454,6 +454,155 @@ def add_reloader_component(x: int = 60, y: int = 130, solve: bool = True) -> dic
 
 
 @mcp.tool()
+def set_script_venv(
+    venv: str,
+    only_nicknames: list[str] | None = None,
+    only_guids: list[str] | None = None,
+    add_if_missing: bool = False,
+    solve: bool = True,
+) -> dict:
+    """Point the ``# venv:`` directive of script components at one environment.
+
+    Rhino 8 script components select their script environment with a leading
+    ``# venv: <name>`` comment on the first line of the code. This tool rewrites
+    that directive across every Python 3 / script component on the active
+    canvas so they all reference the same ``venv``.
+
+    The edit is made by setting the component's ``IScriptComponent.Text``
+    property directly (reached by reflection — it is an explicit interface
+    implementation). That mutates *only* the script body, leaving input sources
+    and wiring untouched. The naive alternative — round-tripping the whole
+    component through ``GH_LooseChunk`` Write/Read — re-deserializes the input
+    parameters and reconnects them to a phantom source at the origin, leaving a
+    ghost component on the canvas. This avoids that entirely.
+
+    Solver safety: setting the text expires the component, which would schedule
+    a solution; with many edits one of those solutions re-runs the LAMCP Bridge
+    component on its own HTTP thread and tears the server down mid-request. So
+    the whole batch runs with ``doc.Enabled = False`` (no solves fire during
+    editing), the solver is restored afterwards, and recompute is requested via
+    ``ScheduleSolution`` on the UI thread (the same decoupling as
+    :func:`solve_grasshopper`). The bridge component is always skipped (matched
+    by the ``LAMCP Bridge`` marker in its source) so it is never repointed or
+    torn down.
+
+    Parameters
+    ----------
+    venv : str
+        Target environment name, e.g. ``"ca-fs26-focus-work"``.
+    only_nicknames : list of str, optional
+        If given, only components whose ``NickName`` is in this list are
+        considered. Combined with ``only_guids`` as a union.
+    only_guids : list of str, optional
+        If given, only components whose instance GUID is in this list are
+        considered. Combined with ``only_nicknames`` as a union.
+    add_if_missing : bool, optional
+        If true, prepend a ``# venv:`` directive to components that have none.
+        Default false — components without an existing directive are left
+        alone (and reported under ``skipped``).
+    solve : bool, optional
+        If true (default), expire the changed components and schedule a
+        solution so they recompute against the new environment.
+
+    Returns
+    -------
+    dict
+        Same envelope as :func:`run_python_script`; ``result`` reprs
+        ``{"target", "changed": [[nick, previous], ...], "added": [...],
+        "already_ok": int, "skipped": [[nick, reason], ...], "errors": [...]}``.
+    """
+    target = venv
+    only_nn = None if only_nicknames is None else list(only_nicknames)
+    only_g = None if only_guids is None else list(only_guids)
+    code = (
+        "import re\n"
+        "import Grasshopper as gh\n"
+        "from System.Reflection import BindingFlags\n"
+        "TARGET = %r\n"
+        % target
+        + "ADD_IF_MISSING = %s\n" % bool(add_if_missing)
+        + "DO_SOLVE = %s\n" % bool(solve)
+        + "ONLY_NN = %r\n" % only_nn
+        + "ONLY_G = %r\n" % only_g
+        + "flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance\n"
+        "venv_re = re.compile(r'^(\\s*#\\s*venv\\s*:\\s*)(.+?)(\\s*)$', re.M)\n"
+        "def prop_by_name(obj, name):\n"
+        "    cur = obj.GetType()\n"
+        "    while cur is not None:\n"
+        "        for p in cur.GetProperties(flags):\n"
+        "            if p.Name == name:\n"
+        "                return p\n"
+        "        cur = cur.BaseType\n"
+        "    return None\n"
+        "def text_prop(obj):\n"
+        "    return prop_by_name(obj, 'RhinoCodePlatform.GH.IScriptComponent.Text')\n"
+        "def set_text_keep_lang(obj, prop, new_txt):\n"
+        "    # Setting Text resets the component's language taxon to '*.*.*'\n"
+        "    # ('Can not determine input code language'); capture the LanguageSpec\n"
+        "    # first and restore it afterwards so the component stays Python.\n"
+        "    lp = prop_by_name(obj, 'RhinoCodePlatform.GH.IScriptComponent.LanguageSpec')\n"
+        "    spec = lp.GetValue(obj) if lp is not None else None\n"
+        "    prop.SetValue(obj, new_txt)\n"
+        "    if lp is not None and spec is not None:\n"
+        "        lp.SetValue(obj, spec)\n"
+        "doc = gh.Instances.ActiveCanvas.Document\n"
+        "changed = []; added = []; already = 0; skipped = []; errors = []\n"
+        "changed_objs = []\n"
+        "prev_enabled = doc.Enabled\n"
+        "doc.Enabled = False\n"
+        "try:\n"
+        "    for obj in doc.Objects:\n"
+        "        tn = obj.GetType().FullName\n"
+        "        if not (tn.endswith('Python3Component') or tn.endswith('ScriptComponent')):\n"
+        "            continue\n"
+        "        if ONLY_NN is not None or ONLY_G is not None:\n"
+        "            ok = (ONLY_NN is not None and obj.NickName in ONLY_NN) or \\\n"
+        "                 (ONLY_G is not None and str(obj.InstanceGuid) in ONLY_G)\n"
+        "            if not ok:\n"
+        "                continue\n"
+        "        prop = text_prop(obj)\n"
+        "        if prop is None:\n"
+        "            continue\n"
+        "        try:\n"
+        "            txt = prop.GetValue(obj)\n"
+        "        except Exception as e:\n"
+        "            errors.append((obj.NickName, repr(e))); continue\n"
+        "        if txt is None:\n"
+        "            continue\n"
+        "        if 'LAMCP Bridge' in txt:\n"
+        "            skipped.append((obj.NickName, 'bridge component')); continue\n"
+        "        m = venv_re.search(txt)\n"
+        "        if m:\n"
+        "            if m.group(2) == TARGET:\n"
+        "                already += 1; continue\n"
+        "            prev = m.group(2)\n"
+        "            new_txt = venv_re.sub(lambda mm: mm.group(1) + TARGET + mm.group(3), txt, 1)\n"
+        "            try:\n"
+        "                set_text_keep_lang(obj, prop, new_txt)\n"
+        "                changed.append((obj.NickName, prev)); changed_objs.append(obj)\n"
+        "            except Exception as e:\n"
+        "                errors.append((obj.NickName, repr(e)))\n"
+        "        elif ADD_IF_MISSING:\n"
+        "            try:\n"
+        "                set_text_keep_lang(obj, prop, '# venv: ' + TARGET + '\\n' + txt)\n"
+        "                added.append(obj.NickName); changed_objs.append(obj)\n"
+        "            except Exception as e:\n"
+        "                errors.append((obj.NickName, repr(e)))\n"
+        "        else:\n"
+        "            skipped.append((obj.NickName, 'no venv directive'))\n"
+        "finally:\n"
+        "    doc.Enabled = prev_enabled\n"
+        "if DO_SOLVE and changed_objs:\n"
+        "    for obj in changed_objs:\n"
+        "        obj.ExpireSolution(False)\n"
+        "    doc.ScheduleSolution(50)\n"
+        "_ = {'target': TARGET, 'changed': changed, 'added': added,\n"
+        "     'already_ok': already, 'skipped': skipped, 'errors': errors}\n"
+    )
+    return run_python_script(code)
+
+
+@mcp.tool()
 def solve_grasshopper(expire_all: bool = False) -> dict:
     """Re-solve the active Grasshopper document, safely.
 
