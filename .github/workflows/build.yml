@@ -42,13 +42,16 @@ jobs:
         # but doesn't install pythonnet itself, so we pre-install it here.
         run: pip install pythonnet
       - name: Build Lamcp_Bridge.ghuser
+        # `target` must be a single-segment path: the action uses `os.mkdir`
+        # (not `makedirs`), so nested paths like `dist/ghuser/` fail because
+        # the parent doesn't exist yet.
         uses: compas-dev/compas-actions.ghpython_components@v5
         with:
           source: grasshopper
-          target: dist/ghuser
+          target: dist
           interpreter: cpython
       - uses: actions/upload-artifact@v5
         with:
           name: Lamcp_Bridge-ghuser
-          path: dist/ghuser/*.ghuser
+          path: dist/*.ghuser
           if-no-files-found: error
