@@ -1,11 +1,38 @@
 # LAMCP
 
+[![PyPI version](https://img.shields.io/pypi/v/lamcp.svg)](https://pypi.org/project/lamcp/)
+[![Python versions](https://img.shields.io/pypi/pyversions/lamcp.svg)](https://pypi.org/project/lamcp/)
+[![License: MIT](https://img.shields.io/pypi/l/lamcp.svg)](LICENSE)
+[![Build](https://img.shields.io/github/actions/workflow/status/gramaziokohler/lamcp/build.yml?branch=main&label=build)](https://github.com/gramaziokohler/lamcp/actions/workflows/build.yml)
+
 **LA**mbda **MCP**: teach your LLM to do Grasshopper tricks.
 
 Lets Claude Code (or any MCP client) introspect and mutate a
 live Grasshopper session in real time: inspect the canvas,
 wire components, read/write slider values, run `RhinoCommon`
 calls, hot-reload modules -all from inside an AI agent loop, without rebuilding userobjects or restarting Rhino.
+
+## Quick start
+
+1. **Register with Claude Code:**
+
+   ```bash
+   claude mcp add lamcp --scope user -- uvx lamcp
+   ```
+
+2. **Install the bridge in Grasshopper:** download
+   [`Lamcp_Bridge.ghuser`](https://github.com/gramaziokohler/lamcp/releases/latest)
+   and drop it into your Grasshopper Components folder
+   (*Grasshopper → File → Special Folders → Components Folder*).
+
+3. **Activate it:** restart Grasshopper, drop the `LAMCP Bridge`
+   component (under the `LAMCP` tab) on the canvas, wire a
+   `Boolean Toggle` set to `True` into `enable`.
+
+Done. Your MCP client now has `run_python_script`, `unload_python_modules`,
+and `bridge_health`. See [Setup](#setup) for alternative install paths
+(without `uvx`, project-scoped, paste-from-source) and the
+[Tools exposed](#tools-exposed) section for what's available.
 
 ## Architecture
 
