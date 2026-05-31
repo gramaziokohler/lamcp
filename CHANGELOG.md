@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.2.0] - 2026-05-31
+
+### Added
+
+* Four Grasshopper authoring/inspection tools, built on top of the bridge:
+  * `list_grasshopper_objects()` — enumerate canvas objects (type, nickname,
+    GUID, pivot, error/warning messages).
+  * `add_python_component(code, name, inputs, outputs, x, y, solve)` — drop a
+    Rhino 8 Python 3 script component (with the given code and I/O params)
+    onto the canvas by deserializing a GH_IO archive into a fresh instance.
+  * `solve_grasshopper(expire_all)` — re-solve via `ScheduleSolution` on the
+    UI thread. Never solves synchronously: the bridge `exec()`s on its own
+    HTTP thread, so a synchronous full solve re-runs the bridge component on
+    that thread and tears the server down mid-request.
+  * `save_grasshopper_document(path)` — save the active document to disk.
+
 ## [0.1.1] - 2026-05-31
 
 ### Fixed

@@ -17,13 +17,22 @@ The bridge URL is read from the ``LAMCP_BRIDGE_URL`` env var
 
 from __future__ import annotations
 
+import base64
 import os
+import uuid
 
 import httpx
 from fastmcp import FastMCP
 
 BRIDGE_URL = os.environ.get("LAMCP_BRIDGE_URL", "http://127.0.0.1:8765")
 DEFAULT_TIMEOUT = 30.0
+
+# Registered type GUIDs for the Rhino 8 (RhinoCodePluginGH) Python 3 script
+# component, discovered by serializing an existing component and reading its
+# GH_IO archive. These are stable for the Rhino 8 script editor plugin.
+_SCRIPT_COMPONENT_GUID = "c9b2d725-6f87-4b07-af90-bd9aefef68eb"  # the component type
+_SCRIPT_PARAM_GUID = "08908df5-fa14-4982-9ab2-1aa0927566aa"  # script variable param
+_TYPEHINT_OBJECT_GUID = "1c282eeb-dd16-439f-94e4-7d92b542fe8b"  # "Object" type hint
 
 mcp = FastMCP("lamcp")
 
@@ -120,6 +129,336 @@ def bridge_health() -> dict:
             return {"reachable": True, "url": BRIDGE_URL, "detail": response.text}
     except httpx.RequestError as exc:
         return {"reachable": False, "url": BRIDGE_URL, "detail": repr(exc)}
+
+
+@mcp.tool()
+def list_grasshopper_objects() -> dict:
+    """List every object on the active Grasshopper canvas.
+
+    Handy for orienting before mutating a document: gives the .NET type,
+    nickname, instance GUID and pivot of each object, plus any error/warning
+    runtime messages it is currently carrying.
+
+    Returns
+    -------
+    dict
+        Same envelope as :func:`run_python_script`. ``result`` is the ``repr``
+        of ``{"document", "path", "count", "objects": [...]}`` where each entry
+        is ``{"type", "nickname", "guid", "pivot", "errors", "warnings"}``.
+    """
+    code = (
+        "import Grasshopper as gh\n"
+        "doc = gh.Instances.ActiveCanvas.Document\n"
+        "L = gh.Kernel.GH_RuntimeMessageLevel\n"
+        "objs = []\n"
+        "if doc is not None:\n"
+        "    for o in doc.Objects:\n"
+        "        piv = o.Attributes.Pivot if o.Attributes else None\n"
+        "        rm = getattr(o, 'RuntimeMessages', None)\n"
+        "        objs.append({\n"
+        "            'type': o.GetType().FullName,\n"
+        "            'nickname': o.NickName,\n"
+        "            'guid': str(o.InstanceGuid),\n"
+        "            'pivot': [piv.X, piv.Y] if piv else None,\n"
+        "            'errors': list(rm(L.Error)) if rm else [],\n"
+        "            'warnings': list(rm(L.Warning)) if rm else [],\n"
+        "        })\n"
+        "_ = {\n"
+        "    'document': None if doc is None else doc.DisplayName,\n"
+        "    'path': None if doc is None else doc.FilePath,\n"
+        "    'count': len(objs), 'objects': objs,\n"
+        "}\n"
+    )
+    return run_python_script(code)
+
+
+def _build_script_component_xml(code, name, inputs, outputs, x, y):
+    """Build the GH_IO XML fragment for a Rhino 8 Python 3 script component.
+
+    Inputs use the default (dynamic) type hint so they accept any incoming
+    data; outputs are tagged with the generic ``Object`` type hint. The script
+    ``code`` is base64-encoded into the ``Text`` item exactly as Grasshopper
+    serializes it.
+    """
+    name_e = _xml_escape(name)
+    code_b64 = base64.b64encode(code.encode("utf-8")).decode("ascii")
+    comp_guid = str(uuid.uuid4())
+    bx, by = x - 52, y - 22
+
+    in_chunks = []
+    for i, raw in enumerate(inputs):
+        pn = _xml_escape(raw)
+        g = str(uuid.uuid4())
+        yy = by + 2 + i * 20
+        in_chunks.append(
+            '<chunk name="InputParam" index="%d"><items count="10">'
+            '<item name="AllowTreeAccess" type_name="gh_bool" type_code="1">true</item>'
+            '<item name="Description" type_name="gh_string" type_code="10">Input %s</item>'
+            '<item name="InstanceGuid" type_name="gh_guid" type_code="9">%s</item>'
+            '<item name="Name" type_name="gh_string" type_code="10">%s</item>'
+            '<item name="NickName" type_name="gh_string" type_code="10">%s</item>'
+            '<item name="Optional" type_name="gh_bool" type_code="1">true</item>'
+            '<item name="ScriptParamAccess" type_name="gh_int32" type_code="3">0</item>'
+            '<item name="ScriptParameterVersion" type_name="gh_int32" type_code="3">2</item>'
+            '<item name="ShowTypeHints" type_name="gh_bool" type_code="1">true</item>'
+            '<item name="SourceCount" type_name="gh_int32" type_code="3">0</item></items>'
+            '<chunks count="1"><chunk name="Attributes"><items count="2">'
+            '<item name="Bounds" type_name="gh_drawing_rectanglef" type_code="35">'
+            "<X>%d</X><Y>%d</Y><W>35</W><H>20</H></item>"
+            '<item name="Pivot" type_name="gh_drawing_pointf" type_code="31">'
+            "<X>%d</X><Y>%d</Y></item>"
+            "</items></chunk></chunks></chunk>"
+            % (i, pn, g, pn, pn, bx + 2, yy, bx + 20, yy + 10)
+        )
+
+    out_chunks = []
+    for i, raw in enumerate(outputs):
+        pn = _xml_escape(raw)
+        g = str(uuid.uuid4())
+        yy = by + 2 + i * 20
+        out_chunks.append(
+            '<chunk name="OutputParam" index="%d"><items count="11">'
+            '<item name="AllowTreeAccess" type_name="gh_bool" type_code="1">false</item>'
+            '<item name="Description" type_name="gh_string" type_code="10">Output %s</item>'
+            '<item name="InstanceGuid" type_name="gh_guid" type_code="9">%s</item>'
+            '<item name="Name" type_name="gh_string" type_code="10">%s</item>'
+            '<item name="NickName" type_name="gh_string" type_code="10">%s</item>'
+            '<item name="Optional" type_name="gh_bool" type_code="1">false</item>'
+            '<item name="ScriptParamAccess" type_name="gh_int32" type_code="3">0</item>'
+            '<item name="ScriptParameterVersion" type_name="gh_int32" type_code="3">2</item>'
+            '<item name="ShowTypeHints" type_name="gh_bool" type_code="1">true</item>'
+            '<item name="SourceCount" type_name="gh_int32" type_code="3">0</item>'
+            '<item name="TypeHintID" type_name="gh_guid" type_code="9">%s</item></items>'
+            '<chunks count="2"><chunk name="Attributes"><items count="2">'
+            '<item name="Bounds" type_name="gh_drawing_rectanglef" type_code="35">'
+            "<X>%d</X><Y>%d</Y><W>35</W><H>20</H></item>"
+            '<item name="Pivot" type_name="gh_drawing_pointf" type_code="31">'
+            "<X>%d</X><Y>%d</Y></item></items></chunk>"
+            '<chunk name="ConverterData"><items count="2">'
+            '<item name="AssemblyName" type_name="gh_string" type_code="10">System.Private.CoreLib</item>'
+            '<item name="TypeName" type_name="gh_string" type_code="10">System.Object</item>'
+            "</items></chunk></chunks></chunk>"
+            % (i, pn, g, pn, pn, _TYPEHINT_OBJECT_GUID, bx + 70, yy, bx + 87, yy + 10)
+        )
+
+    pd = [
+        '<item name="InputCount" type_name="gh_int32" type_code="3">%d</item>'
+        % len(inputs)
+    ]
+    for i in range(len(inputs)):
+        pd.append(
+            '<item name="InputId" index="%d" type_name="gh_guid" type_code="9">%s</item>'
+            % (i, _SCRIPT_PARAM_GUID)
+        )
+    pd.append(
+        '<item name="OutputCount" type_name="gh_int32" type_code="3">%d</item>'
+        % len(outputs)
+    )
+    for i in range(len(outputs)):
+        pd.append(
+            '<item name="OutputId" index="%d" type_name="gh_guid" type_code="9">%s</item>'
+            % (i, _SCRIPT_PARAM_GUID)
+        )
+
+    return (
+        '<Fragment name="ScriptComp"><items count="11">'
+        '<item name="Description" type_name="gh_string" type_code="10">%(name)s</item>'
+        '<item name="GraftStandardOutputLines" type_name="gh_bool" type_code="1">true</item>'
+        '<item name="InstanceGuid" type_name="gh_guid" type_code="9">%(comp)s</item>'
+        '<item name="MarshGuids" type_name="gh_bool" type_code="1">true</item>'
+        '<item name="Name" type_name="gh_string" type_code="10">%(name)s</item>'
+        '<item name="NickName" type_name="gh_string" type_code="10">%(name)s</item>'
+        '<item name="ScriptComponentVersion" type_name="gh_int32" type_code="3">3</item>'
+        '<item name="UsingLibraryInputParam" type_name="gh_bool" type_code="1">false</item>'
+        '<item name="UsingScriptInputParam" type_name="gh_bool" type_code="1">false</item>'
+        '<item name="UsingScriptOutputParam" type_name="gh_bool" type_code="1">false</item>'
+        '<item name="UsingStandardOutputParam" type_name="gh_bool" type_code="1">false</item>'
+        '</items><chunks count="3">'
+        '<chunk name="Attributes"><items count="2">'
+        '<item name="Bounds" type_name="gh_drawing_rectanglef" type_code="35">'
+        "<X>%(bx)d</X><Y>%(by)d</Y><W>104</W><H>44</H></item>"
+        '<item name="Pivot" type_name="gh_drawing_pointf" type_code="31">'
+        "<X>%(x)d</X><Y>%(y)d</Y></item></items></chunk>"
+        '<chunk name="ParameterData"><items count="%(pdn)d">%(pd)s</items>'
+        '<chunks count="%(npc)d">%(pc)s</chunks></chunk>'
+        '<chunk name="Script"><items count="5">'
+        '<item name="MarshGuids" type_name="gh_bool" type_code="1">true</item>'
+        '<item name="MarshInputs" type_name="gh_bool" type_code="1">false</item>'
+        '<item name="MarshOutputs" type_name="gh_bool" type_code="1">true</item>'
+        '<item name="Text" type_name="gh_string" type_code="10">%(code)s</item>'
+        '<item name="Title" type_name="gh_string" type_code="10">%(name)s</item></items>'
+        '<chunks count="1"><chunk name="LanguageSpec"><items count="2">'
+        '<item name="Taxon" type_name="gh_string" type_code="10">*.*.python</item>'
+        '<item name="Version" type_name="gh_string" type_code="10">3.*</item>'
+        "</items></chunk></chunks></chunk></chunks></Fragment>"
+    ) % {
+        "name": name_e,
+        "comp": comp_guid,
+        "bx": bx,
+        "by": by,
+        "x": x,
+        "y": y,
+        "pdn": len(pd),
+        "pd": "".join(pd),
+        "npc": len(inputs) + len(outputs),
+        "pc": "".join(in_chunks) + "".join(out_chunks),
+        "code": code_b64,
+    }
+
+
+def _xml_escape(text: str) -> str:
+    """Escape the three XML-significant characters for element content."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+@mcp.tool()
+def add_python_component(
+    code: str,
+    name: str = "Python 3 Script",
+    inputs: list[str] | None = None,
+    outputs: list[str] | None = None,
+    x: int = 200,
+    y: int = 200,
+    solve: bool = True,
+) -> dict:
+    """Add a Rhino 8 Python 3 script component to the active Grasshopper document.
+
+    The component is built directly as a GH_IO archive and deserialized into a
+    fresh instance, so it carries your code and the exact input/output params
+    you ask for — no manual paste-and-wire step.
+
+    Your ``code`` should define a ``Script_Instance`` class whose ``RunScript``
+    signature matches ``inputs`` and whose return matches ``outputs``::
+
+        import Grasshopper
+
+        class Script_Instance(Grasshopper.Kernel.GH_ScriptInstance):
+            def RunScript(self, a, b):
+                return a + b
+
+    To import a ``.py`` module that lives next to the saved ``.gh`` file (with
+    live reload), start the code with the ``# r: compas`` requirement and call
+    ``compas_rhino.devtools.DevTools.enable_reloader()`` inside ``RunScript``
+    before importing it; the document must be saved for that to resolve.
+
+    Parameters
+    ----------
+    code : str
+        Full Python source for the component (including the ``Script_Instance``
+        class). The leading ``# r:`` / ``# requirements:`` directives are
+        honoured by Rhino's script editor.
+    name : str, optional
+        Component name / nickname. Defaults to ``"Python 3 Script"``.
+    inputs : list of str, optional
+        Input parameter names (dynamic type hint). Defaults to none.
+    outputs : list of str, optional
+        Output parameter names (Object type hint). Defaults to ``["a"]``.
+    x, y : int, optional
+        Canvas pivot for the new component.
+    solve : bool, optional
+        If true (default), expire only the new component and schedule a
+        solution on the UI thread so it computes a value. Read the result back
+        with :func:`list_grasshopper_objects` or :func:`run_python_script`.
+
+    Returns
+    -------
+    dict
+        Same envelope as :func:`run_python_script`; ``result`` reprs
+        ``{"added", "read_ok", "guid", "name"}``.
+    """
+    inputs = list(inputs or [])
+    outputs = list(outputs or ["a"])
+    xml = _build_script_component_xml(code, name, inputs, outputs, x, y)
+    xml_b64 = base64.b64encode(xml.encode("utf-8")).decode("ascii")
+    snippet = (
+        "import base64, System\n"
+        "import Grasshopper as gh\n"
+        "import GH_IO.Serialization as ser\n"
+        "xml = base64.b64decode('%s').decode('utf-8')\n"
+        % xml_b64
+        + "doc = gh.Instances.ActiveCanvas.Document\n"
+        "chunk = ser.GH_LooseChunk('ScriptComp')\n"
+        "chunk.Deserialize_Xml(xml)\n"
+        "comp = gh.Instances.ComponentServer.EmitObject(System.Guid('%s'))\n"
+        % _SCRIPT_COMPONENT_GUID
+        + "if comp is None:\n"
+        "    raise Exception('Could not instantiate the Rhino 8 Python 3 script component')\n"
+        "ok = comp.Read(chunk)\n"
+        "added = doc.AddObject(comp, False)\n"
+        "if %s:\n" % bool(solve) + "    comp.ExpireSolution(False)\n"
+        "    doc.ScheduleSolution(50)\n"
+        "_ = {'added': added, 'read_ok': ok, 'guid': str(comp.InstanceGuid), 'name': comp.NickName}\n"
+    )
+    return run_python_script(snippet)
+
+
+@mcp.tool()
+def solve_grasshopper(expire_all: bool = False) -> dict:
+    """Re-solve the active Grasshopper document, safely.
+
+    The solution is always scheduled on Grasshopper's UI thread via
+    ``ScheduleSolution`` rather than run synchronously. This matters: the
+    bridge ``exec()``s on its own HTTP server thread, and a synchronous full
+    solve (``NewSolution``) re-runs the bridge component on that very thread,
+    tearing the server down mid-request. Scheduling decouples the two.
+
+    Parameters
+    ----------
+    expire_all : bool, optional
+        If true, expire every object first (full recompute). If false
+        (default), only objects already expired recompute.
+
+    Returns
+    -------
+    dict
+        Same envelope as :func:`run_python_script`.
+    """
+    code = (
+        "import Grasshopper as gh\n"
+        "doc = gh.Instances.ActiveCanvas.Document\n"
+        "expire_all = %s\n" % bool(expire_all) + "if expire_all:\n"
+        "    for o in doc.Objects:\n"
+        "        if hasattr(o, 'ExpireSolution'):\n"
+        "            o.ExpireSolution(False)\n"
+        "doc.ScheduleSolution(50)\n"
+        "_ = {'scheduled': True, 'expired_all': expire_all}\n"
+    )
+    return run_python_script(code)
+
+
+@mcp.tool()
+def save_grasshopper_document(path: str | None = None) -> dict:
+    """Save the active Grasshopper document to disk.
+
+    Parameters
+    ----------
+    path : str, optional
+        Destination ``.gh`` path. Defaults to the document's current
+        ``FilePath`` (it must already have been saved once).
+
+    Returns
+    -------
+    dict
+        Same envelope as :func:`run_python_script`; ``result`` reprs
+        ``{"saved", "path", "bytes", "error"}``.
+    """
+    code = (
+        "import os\n"
+        "import Grasshopper as gh\n"
+        "doc = gh.Instances.ActiveCanvas.Document\n"
+        "path = %r or doc.FilePath\n"
+        % path
+        + "saved = False; size = None; err = None\n"
+        "try:\n"
+        "    io = gh.Kernel.GH_DocumentIO(doc)\n"
+        "    saved = io.SaveQuiet(path)\n"
+        "    if path and os.path.exists(path):\n"
+        "        size = os.path.getsize(path)\n"
+        "except Exception as exc:\n"
+        "    err = repr(exc)\n"
+        "_ = {'saved': saved, 'path': path, 'bytes': size, 'error': err}\n"
+    )
+    return run_python_script(code)
 
 
 def main():
