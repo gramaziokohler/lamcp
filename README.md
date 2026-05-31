@@ -12,6 +12,8 @@ live Grasshopper session in real time: inspect the canvas,
 wire components, read/write slider values, run `RhinoCommon`
 calls, hot-reload modules -all from inside an AI agent loop, without rebuilding userobjects or restarting Rhino.
 
+![Little demo](lamcp.gif)
+
 ## Quick start
 
 1. **Register with Claude Code:**
