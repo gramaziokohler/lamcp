@@ -29,29 +29,34 @@ living inside Rhino as a regular Grasshopper component.
 
 ### 1. Register with Claude Code
 
-The friction-free path uses [`uvx`](https://docs.astral.sh/uv/) so no
-explicit install of `lamcp` is needed — it'll be fetched and cached on
-first invocation:
+LAMCP is a dev tool you'll want available everywhere, so register it at
+**user scope**. The friction-free path uses
+[`uvx`](https://docs.astral.sh/uv/) so no explicit install of `lamcp` is
+needed — it'll be fetched and cached on first invocation:
 
 ```bash
-claude mcp add lamcp -- uvx lamcp
+claude mcp add lamcp --scope user -- uvx lamcp
 ```
 
 Or, if you'd rather install `lamcp` into your environment first:
 
 ```bash
 pip install lamcp     # or: uv tool install lamcp
-claude mcp add lamcp -- lamcp
+claude mcp add lamcp --scope user -- lamcp
 ```
 
-To scope the registration to a single project (writes a `.mcp.json` in
-the repo, checked into git so collaborators get it too):
+> **Pick the right `--scope`.** Without `--scope`, `claude mcp add`
+> defaults to *local* scope, which only loads the server when Claude Code
+> is launched from the exact directory you ran the command in. That's
+> almost never what you want for a dev tool. Your options:
+>
+> | Scope     | Stored in                                                       | Use when                                          |
+> | --------- | --------------------------------------------------------------- | ------------------------------------------------- |
+> | `user`    | `~/.claude.json` (top-level `mcpServers`)                       | You want LAMCP available in every project         |
+> | `project` | `<repo>/.mcp.json` (committed to git, shared with collaborators)| Your whole team should get LAMCP for one project  |
+> | `local`   | `~/.claude.json` under the current project entry (default)      | You're temporarily trying it in one directory     |
 
-```bash
-claude mcp add lamcp --scope project -- uvx lamcp
-```
-
-Verify:
+Verify the registration:
 
 ```bash
 claude mcp list
