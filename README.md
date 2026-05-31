@@ -20,7 +20,7 @@ calls, hot-reload modules -all from inside an AI agent loop, without rebuilding 
    claude mcp add lamcp --scope user -- uvx lamcp
    ```
 
-2. **Install the bridge in Grasshopper:** download
+2. **Install it in Grasshopper:** download
    [`Lamcp_Bridge.ghuser`](https://github.com/gramaziokohler/lamcp/releases/latest)
    and drop it into your Grasshopper Components folder
    (*Grasshopper → File → Special Folders → Components Folder*).
@@ -29,8 +29,9 @@ calls, hot-reload modules -all from inside an AI agent loop, without rebuilding 
    component (under the `LAMCP` tab) on the canvas, wire a
    `Boolean Toggle` set to `True` into `enable`.
 
-Done. Your MCP client now has `run_python_script`, `unload_python_modules`,
-and `bridge_health`. See [Setup](#setup) for alternative install paths
+Done!
+
+See [Setup](#setup) for alternative install paths
 (without `uvx`, project-scoped, paste-from-source) and the
 [Tools exposed](#tools-exposed) section for what's available.
 
