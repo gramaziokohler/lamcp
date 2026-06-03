@@ -738,6 +738,238 @@ def save_grasshopper_document(path: str | None = None) -> dict:
     return run_python_script(code)
 
 
+_PARAM_MARKER_TYPES = {
+    "generic": "Param_GenericObject",
+    "plane": "Param_Plane",
+    "number": "Param_Number",
+    "integer": "Param_Integer",
+    "string": "Param_String",
+    "boolean": "Param_Boolean",
+    "point": "Param_Point",
+    "vector": "Param_Vector",
+    "curve": "Param_Curve",
+    "geometry": "Param_Geometry",
+}
+
+
+def _parse_hex_colour(spec: str) -> tuple[int, int, int, int]:
+    """Parse ``#RRGGBB`` or ``#RRGGBBAA`` into an ARGB tuple."""
+    s = spec.lstrip("#")
+    if len(s) == 6:
+        r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+        return (255, r, g, b)
+    if len(s) == 8:
+        r, g, b, a = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), int(s[6:8], 16)
+        return (a, r, g, b)
+    raise ValueError("Colour must be '#RRGGBB' or '#RRGGBBAA', got {!r}".format(spec))
+
+
+@mcp.tool()
+def add_group(
+    name: str,
+    member_guids: list[str],
+    colour: str | None = None,
+) -> dict:
+    """Wrap GH objects in a named ``GH_Group`` on the active canvas.
+
+    Groups are the primary visual structuring device on the canvas — they
+    label conceptually distinct subgraphs (e.g. "ROS Connection", "Plan
+    Cartesian Motion") and make the canvas readable when it grows beyond a
+    handful of components. Pair with :func:`add_param_marker` to publish a
+    group's outputs as labeled buses that downstream groups can wire to.
+
+    Group geometry (its bounds) is derived from member positions, so members
+    must already be on the canvas. Adding objects to a group does not modify
+    their wiring or pivots; you can also call this *after* you finish
+    assembling a subgraph.
+
+    Parameters
+    ----------
+    name : str
+        Group nickname. Shown at the top-left of the group.
+    member_guids : list of str
+        Instance GUIDs of objects to include. Must be non-empty.
+    colour : str, optional
+        Group fill colour as ``"#RRGGBB"`` or ``"#RRGGBBAA"``. Defaults to
+        Grasshopper's default semi-transparent grey.
+
+    Returns
+    -------
+    dict
+        Same envelope as :func:`run_python_script`; ``result`` reprs
+        ``{"guid", "name", "member_count"}``.
+    """
+    if not member_guids:
+        raise ValueError("add_group requires at least one member_guid")
+    argb = _parse_hex_colour(colour) if colour else None
+    code = (
+        _UI_THREAD_BOOTSTRAP
+        + "import Grasshopper as gh, System\n"
+        + "NAME = {!r}\n".format(name)
+        + "GUIDS = {!r}\n".format(list(member_guids))
+        + "ARGB = {!r}\n".format(argb)
+        + "def _do():\n"
+        "    doc = gh.Instances.ActiveCanvas.Document\n"
+        "    g = gh.Kernel.Special.GH_Group()\n"
+        "    g.NickName = NAME\n"
+        "    for guid in GUIDS:\n"
+        "        g.AddObject(System.Guid(guid))\n"
+        "    if ARGB is not None:\n"
+        "        a, r, gn, b = ARGB\n"
+        "        g.Colour = System.Drawing.Color.FromArgb(a, r, gn, b)\n"
+        "    doc.AddObject(g, False)\n"
+        "    return {'guid': str(g.InstanceGuid), 'name': g.NickName, 'member_count': len(list(g.ObjectIDs))}\n"
+        "_ = _lamcp_run_on_ui(_do)\n"
+    )
+    return run_python_script(code)
+
+
+@mcp.tool()
+def add_param_marker(
+    name: str,
+    x: int,
+    y: int,
+    param_type: str = "generic",
+) -> dict:
+    """Drop a named floating parameter on the canvas as a labeled pass-through bus.
+
+    Param markers are the canvas-authoring idiom for "this is a meaningful
+    boundary value". They make subgraphs composable: wire a group's
+    important outputs into named markers, and downstream groups wire FROM
+    those markers — the name labels the connection visibly and survives
+    moves and refactors.
+
+    Typical use: after assembling a planner subgraph, drop a
+    ``Param_GenericObject`` named ``"planner"`` at its output and wire the
+    planner component's output into it. Any downstream subgraph that needs
+    the planner reads from the marker, not from the component directly.
+
+    The marker holds no persistent value of its own — it just relays data
+    through.
+
+    Parameters
+    ----------
+    name : str
+        Nickname displayed on the marker (e.g. ``"planner"``,
+        ``"robot_cell"``, ``"motion_end_state"``).
+    x, y : int
+        Canvas pivot in document coordinates.
+    param_type : str, optional
+        One of ``"generic"`` (default), ``"plane"``, ``"number"``,
+        ``"integer"``, ``"string"``, ``"boolean"``, ``"point"``,
+        ``"vector"``, ``"curve"``, ``"geometry"``. ``"generic"`` accepts
+        any compas_fab / COMPAS object and is the right choice for the
+        cross-section bus pattern.
+
+    Returns
+    -------
+    dict
+        Same envelope as :func:`run_python_script`; ``result`` reprs
+        ``{"guid", "name", "type"}``.
+    """
+    if param_type not in _PARAM_MARKER_TYPES:
+        raise ValueError(
+            "Unknown param_type {!r}; expected one of: {}".format(
+                param_type, sorted(_PARAM_MARKER_TYPES)
+            )
+        )
+    cls_name = _PARAM_MARKER_TYPES[param_type]
+    code = (
+        _UI_THREAD_BOOTSTRAP
+        + "import Grasshopper as gh, System\n"
+        + "NAME = {!r}\n".format(name)
+        + "X = {!r}\n".format(int(x))
+        + "Y = {!r}\n".format(int(y))
+        + "CLS_NAME = {!r}\n".format(cls_name)
+        + "def _do():\n"
+        "    doc = gh.Instances.ActiveCanvas.Document\n"
+        "    cls = getattr(gh.Kernel.Parameters, CLS_NAME)\n"
+        "    p = cls()\n"
+        "    p.NickName = NAME\n"
+        "    if p.Attributes is None:\n"
+        "        p.CreateAttributes()\n"
+        "    p.Attributes.Pivot = System.Drawing.PointF(float(X), float(Y))\n"
+        "    doc.AddObject(p, False)\n"
+        "    return {'guid': str(p.InstanceGuid), 'name': p.NickName, 'type': p.GetType().Name}\n"
+        "_ = _lamcp_run_on_ui(_do)\n"
+    )
+    return run_python_script(code)
+
+
+@mcp.tool()
+def describe_canvas_structure() -> dict:
+    """Richer counterpart to :func:`list_grasshopper_objects` that includes group memberships and parameter source connections.
+
+    For each object on the canvas, reports:
+
+    - The fields already exposed by :func:`list_grasshopper_objects`
+      (type, nickname, guid, pivot, errors, warnings).
+    - If it is a ``GH_Group``: a ``group_members`` list of the contained
+      object GUIDs.
+    - If it is a component: ``inputs`` (with per-param ``sources`` listing
+      the upstream owner GUID + source param name/nickname) and
+      ``outputs``.
+    - If it is a floating parameter (e.g. a named ``Param_GenericObject``
+      bus marker): a ``sources`` list with the same shape.
+
+    This is the inspection tool to call when you need to learn from an
+    existing canvas — the pattern of who-wires-to-what plus group
+    boundaries is enough to reconstruct subgraphs without a follow-up
+    round-trip per object.
+
+    Returns
+    -------
+    dict
+        Same envelope as :func:`run_python_script`. ``result`` is the
+        ``repr`` of ``{"document", "path", "count", "objects": [...]}``.
+        Each object entry carries the fields described above; absent keys
+        mean "not applicable" (e.g. ``group_members`` only appears on
+        ``GH_Group`` entries).
+    """
+    code = (
+        "import Grasshopper as gh\n"
+        "doc = gh.Instances.ActiveCanvas.Document\n"
+        "L = gh.Kernel.GH_RuntimeMessageLevel\n"
+        "def _pinfo(p):\n"
+        "    return {'name': getattr(p, 'Name', None), 'nickname': getattr(p, 'NickName', None), 'guid': str(p.InstanceGuid)}\n"
+        "def _srcs(p):\n"
+        "    out = []\n"
+        "    for src in p.Sources:\n"
+        "        owner = src.Attributes.GetTopLevel.DocObject if src.Attributes else None\n"
+        "        out.append({'owner_guid': str(owner.InstanceGuid) if owner is not None else None,\n"
+        "                    'param_name': getattr(src, 'Name', None),\n"
+        "                    'param_nickname': getattr(src, 'NickName', None)})\n"
+        "    return out\n"
+        "objs = []\n"
+        "if doc is not None:\n"
+        "    for o in doc.Objects:\n"
+        "        piv = o.Attributes.Pivot if o.Attributes else None\n"
+        "        rm = getattr(o, 'RuntimeMessages', None)\n"
+        "        entry = {\n"
+        "            'type': o.GetType().FullName,\n"
+        "            'nickname': o.NickName,\n"
+        "            'guid': str(o.InstanceGuid),\n"
+        "            'pivot': [piv.X, piv.Y] if piv else None,\n"
+        "            'errors': list(rm(L.Error)) if rm else [],\n"
+        "            'warnings': list(rm(L.Warning)) if rm else [],\n"
+        "        }\n"
+        "        if isinstance(o, gh.Kernel.Special.GH_Group):\n"
+        "            entry['group_members'] = [str(g) for g in o.ObjectIDs]\n"
+        "        elif hasattr(o, 'Params'):\n"
+        "            entry['inputs'] = [dict(_pinfo(p), sources=_srcs(p)) for p in o.Params.Input]\n"
+        "            entry['outputs'] = [_pinfo(p) for p in o.Params.Output]\n"
+        "        elif hasattr(o, 'Sources'):\n"
+        "            entry['sources'] = _srcs(o)\n"
+        "        objs.append(entry)\n"
+        "_ = {\n"
+        "    'document': None if doc is None else doc.DisplayName,\n"
+        "    'path': None if doc is None else doc.FilePath,\n"
+        "    'count': len(objs), 'objects': objs,\n"
+        "}\n"
+    )
+    return run_python_script(code)
+
+
 def main():
     """Run the MCP server on stdio."""
     mcp.run()

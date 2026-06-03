@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.5.0] - 2026-06-02
+
+### Added
+
+* `add_group(name, member_guids, colour)` — wrap GH objects in a named
+  `GH_Group` on the active canvas. Groups are the primary visual structuring
+  device on a busy canvas (one named group per conceptually distinct
+  subgraph). The optional `colour` accepts `"#RRGGBB"` or `"#RRGGBBAA"`;
+  group geometry is derived from member positions, so members must already
+  be on the canvas. Mutating, runs on the UI thread via
+  `_UI_THREAD_BOOTSTRAP`.
+* `add_param_marker(name, x, y, param_type)` — drop a labeled floating
+  parameter (`Param_GenericObject` by default; also `plane`, `number`,
+  `integer`, `string`, `boolean`, `point`, `vector`, `curve`, `geometry`).
+  Pairs with `add_group` to publish a subgraph's outputs as named buses
+  that downstream subgraphs can wire to — the marker name labels the
+  connection visibly and survives moves and refactors. Mutating, UI-thread
+  safe.
+* `describe_canvas_structure()` — richer counterpart to
+  `list_grasshopper_objects`. For each object adds (when applicable):
+  `group_members` on `GH_Group` entries; `inputs[].sources` listing the
+  upstream `{owner_guid, param_name, param_nickname}` per input on
+  components; `sources` on floating params. Read-only; lets an agent
+  learn from an existing canvas in one call.
+
 ## [0.4.1] - 2026-05-31
 
 ### Fixed
