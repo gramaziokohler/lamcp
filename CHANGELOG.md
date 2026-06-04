@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.6.0] - 2026-06-04
+
+### Added
+
+* `upgrade_components(only_categories, only_nicknames, dry_run)` — replace
+  on-canvas instances of userobject-based GH components with their latest
+  installed version. Identifies each instance against the installed
+  `ComponentServer` proxies by the `(Category, SubCategory, Name)` triple
+  (*not* by proxy GUID — userobject rebuilds invalidate those — and *not*
+  by `NickName` alone — users customise it). Snapshots pivot, NickName,
+  group memberships, and per-pin wires (recording the **other** end of
+  each wire so source GUIDs dying on removal don't matter), then swaps in
+  a fresh instance and restores everything by name. Pins that were
+  renamed/removed in the new version surface as *dropped wires* in the
+  return value. Default scope `["COMPAS FAB"]`; pass `dry_run=True` to
+  preview before mutating. Mutating, UI-thread safe.
+
 ## [0.5.0] - 2026-06-02
 
 ### Added

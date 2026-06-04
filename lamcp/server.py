@@ -970,6 +970,242 @@ def describe_canvas_structure() -> dict:
     return run_python_script(code)
 
 
+_UPGRADE_COMPONENTS_SCRIPT = """
+import base64
+import Grasshopper as gh
+import System
+
+doc = gh.Instances.ActiveCanvas.Document
+server = gh.Instances.ComponentServer
+
+CATEGORIES = set(__CATEGORIES__) if __CATEGORIES__ is not None else None
+NICKNAMES = set(__NICKNAMES__) if __NICKNAMES__ is not None else None
+DRY_RUN = bool(__DRY_RUN__)
+
+# Build (Category, SubCategory, Name) -> ObjectProxy
+proxy_by_key = {}
+for p in server.ObjectProxies:
+    d = p.Desc
+    if d.Category and d.Name:
+        proxy_by_key[(d.Category, d.SubCategory or '', d.Name)] = p
+
+def _snapshot(o):
+    inputs = {}
+    for ip in o.Params.Input:
+        srcs = []
+        for s in ip.Sources:
+            owner = s.Attributes.GetTopLevel.DocObject if s.Attributes else None
+            if owner is None:
+                continue
+            srcs.append({
+                'owner_guid': str(owner.InstanceGuid),
+                'owner_is_component': hasattr(owner, 'Params'),
+                'source_param_name': s.Name if hasattr(owner, 'Params') else '',
+            })
+        inputs[ip.Name] = srcs
+    outputs = {}
+    for op in o.Params.Output:
+        tgts = []
+        for other in doc.Objects:
+            if other is o:
+                continue
+            if hasattr(other, 'Params'):
+                for ip2 in other.Params.Input:
+                    if any(s.InstanceGuid == op.InstanceGuid for s in ip2.Sources):
+                        tgts.append({'target_guid': str(other.InstanceGuid),
+                                     'target_param_name': ip2.Name,
+                                     'target_is_floating': False})
+            elif hasattr(other, 'Sources'):
+                if any(s.InstanceGuid == op.InstanceGuid for s in other.Sources):
+                    tgts.append({'target_guid': str(other.InstanceGuid),
+                                 'target_param_name': '',
+                                 'target_is_floating': True})
+        outputs[op.Name] = tgts
+    groups = []
+    for other in doc.Objects:
+        if isinstance(other, gh.Kernel.Special.GH_Group):
+            if o.InstanceGuid in list(other.ObjectIDs):
+                groups.append(str(other.InstanceGuid))
+    return {'inputs': inputs, 'outputs': outputs, 'groups': groups,
+            'pivot': [o.Attributes.Pivot.X, o.Attributes.Pivot.Y],
+            'nickname': o.NickName}
+
+plan = []
+skipped = []
+for o in doc.Objects:
+    if not hasattr(o, 'Params'):
+        continue
+    cat = getattr(o, 'Category', None) or ''
+    if CATEGORIES is not None and cat not in CATEGORIES:
+        continue
+    if NICKNAMES is not None and o.NickName not in NICKNAMES:
+        continue
+    name = getattr(o, 'Name', None)
+    subcat = getattr(o, 'SubCategory', None) or ''
+    key = (cat, subcat, name)
+    proxy = proxy_by_key.get(key)
+    if proxy is None:
+        skipped.append({'guid': str(o.InstanceGuid), 'key': list(key),
+                        'reason': 'no matching installed userobject'})
+        continue
+    snap = _snapshot(o)
+    fresh = proxy.CreateInstance()
+    new_ins = {p.Name for p in fresh.Params.Input}
+    new_outs = {p.Name for p in fresh.Params.Output}
+    carried = (sum(len(v) for k, v in snap['inputs'].items() if k in new_ins)
+               + sum(len(v) for k, v in snap['outputs'].items() if k in new_outs))
+    dropped = []
+    for in_name, srcs in snap['inputs'].items():
+        if in_name not in new_ins:
+            for s in srcs:
+                dropped.append({'old_component_guid': str(o.InstanceGuid),
+                                'side': 'input', 'name': in_name,
+                                'other_guid': s['owner_guid'],
+                                'reason': 'input removed in new version'})
+    for out_name, tgts in snap['outputs'].items():
+        if out_name not in new_outs:
+            for t in tgts:
+                dropped.append({'old_component_guid': str(o.InstanceGuid),
+                                'side': 'output', 'name': out_name,
+                                'other_guid': t['target_guid'],
+                                'reason': 'output removed in new version'})
+    plan.append({'old_guid': str(o.InstanceGuid), 'old_obj': o, 'fresh': fresh,
+                 'name': name, 'snap': snap, 'new_ins': new_ins, 'new_outs': new_outs,
+                 'carried': carried, 'dropped': dropped})
+
+if not DRY_RUN and plan:
+    def _do():
+        guid_map = {}
+        # Phase A: remove old, add new at the same pivot with the same NickName.
+        for e in plan:
+            fresh = e['fresh']
+            snap = e['snap']
+            if fresh.Attributes is None:
+                fresh.CreateAttributes()
+            fresh.Attributes.Pivot = System.Drawing.PointF(float(snap['pivot'][0]), float(snap['pivot'][1]))
+            fresh.NickName = snap['nickname']
+            doc.RemoveObject(e['old_obj'], True)
+            doc.AddObject(fresh, False)
+            guid_map[e['old_guid']] = fresh
+
+        def _resolve(guid_str):
+            if guid_str in guid_map:
+                return guid_map[guid_str]
+            return doc.FindObject(System.Guid(guid_str), True)
+
+        # Phase B: rewire inputs + outputs and restore group memberships.
+        for e in plan:
+            fresh = e['fresh']
+            snap = e['snap']
+            for in_name, srcs in snap['inputs'].items():
+                if in_name not in e['new_ins']:
+                    continue
+                tgt_param = next(p for p in fresh.Params.Input if p.Name == in_name)
+                for s in srcs:
+                    other = _resolve(s['owner_guid'])
+                    if other is None:
+                        continue
+                    if s['owner_is_component'] and hasattr(other, 'Params'):
+                        src_param = next((p for p in other.Params.Output if p.Name == s['source_param_name']), None)
+                    else:
+                        src_param = other
+                    if src_param is not None:
+                        tgt_param.AddSource(src_param)
+            for out_name, tgts in snap['outputs'].items():
+                if out_name not in e['new_outs']:
+                    continue
+                src_param = next(p for p in fresh.Params.Output if p.Name == out_name)
+                for t in tgts:
+                    other = _resolve(t['target_guid'])
+                    if other is None:
+                        continue
+                    if t['target_is_floating']:
+                        if hasattr(other, 'AddSource'):
+                            other.AddSource(src_param)
+                    elif hasattr(other, 'Params'):
+                        tp = next((p for p in other.Params.Input if p.Name == t['target_param_name']), None)
+                        if tp is not None:
+                            tp.AddSource(src_param)
+            for grp_guid in snap['groups']:
+                grp = doc.FindObject(System.Guid(grp_guid), True)
+                if grp is not None:
+                    grp.AddObject(fresh.InstanceGuid)
+        return {'updated_count': len(plan)}
+
+    _lamcp_run_on_ui(_do)
+
+_ = {
+    'document': doc.DisplayName,
+    'dry_run': DRY_RUN,
+    'updated': [{'old_guid': e['old_guid'],
+                 'new_guid': str(e['fresh'].InstanceGuid),
+                 'name': e['name'],
+                 'carried_wires': e['carried'],
+                 'dropped_wires': len(e['dropped'])} for e in plan],
+    'dropped_wires': [w for e in plan for w in e['dropped']],
+    'skipped': skipped,
+}
+"""
+
+
+@mcp.tool()
+def upgrade_components(
+    only_categories: list[str] | None = None,
+    only_nicknames: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Replace canvas instances of userobject-based GH components with their latest installed version.
+
+    Identifies each on-canvas component against the installed
+    ``ComponentServer`` proxies by the ``(Category, SubCategory, Name)`` triple
+    — *not* by component proxy GUID (userobject rebuilds generate new GUIDs)
+    and *not* by ``NickName`` alone (users customise it). For each match the
+    tool snapshots the current instance's pivot, ``NickName``, group
+    memberships, and per-input/per-output wires (recording the **other**
+    end of each wire by GUID + param name, since the local end's GUIDs die
+    on removal), then removes the old instance and drops a fresh one
+    in-place. Wires are restored by name match against the new component's
+    pins; any input or output that was renamed/removed in the new version
+    becomes a *dropped wire* reported in the result.
+
+    Default scope is ``only_categories=["COMPAS FAB"]`` — pass an explicit
+    list to widen or narrow. Use ``dry_run=True`` first to see what would be
+    updated and which wires would be dropped, then call again with
+    ``dry_run=False`` to perform the swap.
+
+    Parameters
+    ----------
+    only_categories : list of str, optional
+        Limit the upgrade to components whose ``Category`` is in this list.
+        Defaults to ``["COMPAS FAB"]``.
+    only_nicknames : list of str, optional
+        Further restrict by on-canvas ``NickName`` (matched exactly).
+        Useful for "upgrade just this one Cf_PlanMotion".
+    dry_run : bool, optional
+        If True, report what would change without mutating the document.
+        Defaults to False.
+
+    Returns
+    -------
+    dict
+        Same envelope as :func:`run_python_script`; ``result`` reprs
+        ``{"document", "dry_run", "updated": [...], "dropped_wires": [...],
+        "skipped": [...]}``. ``updated`` entries carry ``carried_wires`` and
+        ``dropped_wires`` counts; ``dropped_wires`` lists each lost wire with
+        the side (input/output), pin name, the other end's GUID, and the
+        reason.
+    """
+    if only_categories is None:
+        only_categories = ["COMPAS FAB"]
+    script_body = (
+        _UPGRADE_COMPONENTS_SCRIPT
+        .replace("__CATEGORIES__", repr(list(only_categories)))
+        .replace("__NICKNAMES__", repr(list(only_nicknames)) if only_nicknames is not None else "None")
+        .replace("__DRY_RUN__", repr(bool(dry_run)))
+    )
+    return run_python_script(_UI_THREAD_BOOTSTRAP + script_body)
+
+
 def main():
     """Run the MCP server on stdio."""
     mcp.run()
