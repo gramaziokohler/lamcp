@@ -1198,9 +1198,13 @@ def upgrade_components(
     if only_categories is None:
         only_categories = ["COMPAS FAB"]
     script_body = (
-        _UPGRADE_COMPONENTS_SCRIPT
-        .replace("__CATEGORIES__", repr(list(only_categories)))
-        .replace("__NICKNAMES__", repr(list(only_nicknames)) if only_nicknames is not None else "None")
+        _UPGRADE_COMPONENTS_SCRIPT.replace(
+            "__CATEGORIES__", repr(list(only_categories))
+        )
+        .replace(
+            "__NICKNAMES__",
+            repr(list(only_nicknames)) if only_nicknames is not None else "None",
+        )
         .replace("__DRY_RUN__", repr(bool(dry_run)))
     )
     return run_python_script(_UI_THREAD_BOOTSTRAP + script_body)
