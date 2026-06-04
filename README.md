@@ -132,6 +132,10 @@ exec()s code inside your live Rhino session.
 | `set_script_venv`           | repoint `# venv:` directive of script components at one environment      |
 | `solve_grasshopper`         | re-solve safely via `ScheduleSolution` on the UI thread                  |
 | `save_grasshopper_document` | save the active document to disk                                         |
+| `add_group`                 | wrap canvas objects in a named Grasshopper group                         |
+| `add_param_marker`          | drop a named floating parameter as a labeled pass-through bus            |
+| `describe_canvas_structure` | inspect objects, groups, params, and source connections on the canvas    |
+| `upgrade_components`        | replace userobject-based components with the latest installed version    |
 
 ### Return contract for `run_python_script`
 
