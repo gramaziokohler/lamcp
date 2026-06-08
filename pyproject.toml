@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lamcp"
-version = "0.6.1"
+version = "0.6.2"
 description = "Lambda MCP: teach your LLM to do Grasshopper tricks."
 readme = "README.md"
 requires-python = ">=3.10"
