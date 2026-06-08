@@ -981,13 +981,23 @@ server = gh.Instances.ComponentServer
 CATEGORIES = set(__CATEGORIES__) if __CATEGORIES__ is not None else None
 NICKNAMES = set(__NICKNAMES__) if __NICKNAMES__ is not None else None
 DRY_RUN = bool(__DRY_RUN__)
+MATCH_BY_NAME = bool(__MATCH_BY_NAME__)
 
-# Build (Category, SubCategory, Name) -> ObjectProxy
+# Build (Category, SubCategory, Name) -> ObjectProxy, plus Name -> [proxies].
+# Rhino 8 RhinoCode script components report a generic on-canvas
+# Category/SubCategory ('Maths'/'Script') that does NOT match their installed
+# userobject proxy's (e.g. 'COMPAS FAB'/'Robot Cell'), and freshly-dropped vs
+# saved instances can even differ from each other. Matching by the full triple
+# therefore misses them, so we keep a Name index as a fallback (used only when a
+# Name maps to exactly one installed proxy) and scope by the *proxy's* category.
 proxy_by_key = {}
+proxy_by_name = {}
 for p in server.ObjectProxies:
     d = p.Desc
-    if d.Category and d.Name:
-        proxy_by_key[(d.Category, d.SubCategory or '', d.Name)] = p
+    if d.Name:
+        if d.Category:
+            proxy_by_key[(d.Category, d.SubCategory or '', d.Name)] = p
+        proxy_by_name.setdefault(d.Name, []).append(p)
 
 def _snapshot(o):
     inputs = {}
@@ -1035,18 +1045,31 @@ skipped = []
 for o in doc.Objects:
     if not hasattr(o, 'Params'):
         continue
-    cat = getattr(o, 'Category', None) or ''
-    if CATEGORIES is not None and cat not in CATEGORIES:
-        continue
     if NICKNAMES is not None and o.NickName not in NICKNAMES:
         continue
     name = getattr(o, 'Name', None)
+    cat = getattr(o, 'Category', None) or ''
     subcat = getattr(o, 'SubCategory', None) or ''
-    key = (cat, subcat, name)
-    proxy = proxy_by_key.get(key)
+    # Resolve the installed proxy: exact triple first, then unambiguous Name.
+    proxy = proxy_by_key.get((cat, subcat, name))
+    matched_by = 'triple'
+    if proxy is None and MATCH_BY_NAME and name:
+        candidates = proxy_by_name.get(name, [])
+        if len(candidates) == 1:
+            proxy = candidates[0]
+            matched_by = 'name'
+        elif len(candidates) > 1:
+            skipped.append({'guid': str(o.InstanceGuid), 'key': [cat, subcat, name],
+                            'reason': 'ambiguous name match (%d installed proxies)' % len(candidates)})
+            continue
     if proxy is None:
-        skipped.append({'guid': str(o.InstanceGuid), 'key': list(key),
+        skipped.append({'guid': str(o.InstanceGuid), 'key': [cat, subcat, name],
                         'reason': 'no matching installed userobject'})
+        continue
+    # Scope by the PROXY's category (authoritative), so e.g.
+    # only_categories=['COMPAS FAB'] still matches script components that report
+    # 'Maths' on the canvas but whose installed proxy lives under 'COMPAS FAB'.
+    if CATEGORIES is not None and (proxy.Desc.Category or '') not in CATEGORIES:
         continue
     snap = _snapshot(o)
     fresh = proxy.CreateInstance()
@@ -1071,7 +1094,7 @@ for o in doc.Objects:
                                 'reason': 'output removed in new version'})
     plan.append({'old_guid': str(o.InstanceGuid), 'old_obj': o, 'fresh': fresh,
                  'name': name, 'snap': snap, 'new_ins': new_ins, 'new_outs': new_outs,
-                 'carried': carried, 'dropped': dropped})
+                 'carried': carried, 'dropped': dropped, 'matched_by': matched_by})
 
 if not DRY_RUN and plan:
     def _do():
@@ -1140,6 +1163,7 @@ _ = {
     'updated': [{'old_guid': e['old_guid'],
                  'new_guid': str(e['fresh'].InstanceGuid),
                  'name': e['name'],
+                 'matched_by': e['matched_by'],
                  'carried_wires': e['carried'],
                  'dropped_wires': len(e['dropped'])} for e in plan],
     'dropped_wires': [w for e in plan for w in e['dropped']],
@@ -1153,20 +1177,31 @@ def upgrade_components(
     only_categories: list[str] | None = None,
     only_nicknames: list[str] | None = None,
     dry_run: bool = False,
+    match_by_name: bool = True,
 ) -> dict:
     """Replace canvas instances of userobject-based GH components with their latest installed version.
 
     Identifies each on-canvas component against the installed
     ``ComponentServer`` proxies by the ``(Category, SubCategory, Name)`` triple
     — *not* by component proxy GUID (userobject rebuilds generate new GUIDs)
-    and *not* by ``NickName`` alone (users customise it). For each match the
-    tool snapshots the current instance's pivot, ``NickName``, group
-    memberships, and per-input/per-output wires (recording the **other**
+    and *not* by ``NickName`` alone (users customise it). When the triple does
+    not match (Rhino 8 RhinoCode *script* components report a generic
+    ``Maths``/``Script`` category on the canvas that differs from their installed
+    proxy's, and freshly-dropped vs saved instances can differ from each other),
+    the tool falls back to matching by ``Name`` alone — but only when that Name
+    maps to exactly one installed proxy, so an unrelated generic script is never
+    swapped by accident. The ``only_categories`` scope is then applied against
+    the resolved **proxy's** category, so ``["COMPAS FAB"]`` still selects those
+    script components.
+
+    For each match the tool snapshots the current instance's pivot, ``NickName``,
+    group memberships, and per-input/per-output wires (recording the **other**
     end of each wire by GUID + param name, since the local end's GUIDs die
     on removal), then removes the old instance and drops a fresh one
     in-place. Wires are restored by name match against the new component's
     pins; any input or output that was renamed/removed in the new version
-    becomes a *dropped wire* reported in the result.
+    becomes a *dropped wire* reported in the result. Each ``updated`` entry
+    records whether it was matched ``by`` ``"triple"`` or ``"name"``.
 
     Default scope is ``only_categories=["COMPAS FAB"]`` — pass an explicit
     list to widen or narrow. Use ``dry_run=True`` first to see what would be
@@ -1176,14 +1211,19 @@ def upgrade_components(
     Parameters
     ----------
     only_categories : list of str, optional
-        Limit the upgrade to components whose ``Category`` is in this list.
-        Defaults to ``["COMPAS FAB"]``.
+        Limit the upgrade to components whose installed proxy ``Category`` is in
+        this list. Defaults to ``["COMPAS FAB"]``.
     only_nicknames : list of str, optional
         Further restrict by on-canvas ``NickName`` (matched exactly).
         Useful for "upgrade just this one Cf_PlanMotion".
     dry_run : bool, optional
         If True, report what would change without mutating the document.
         Defaults to False.
+    match_by_name : bool, optional
+        If True (default), fall back to matching by ``Name`` when the
+        ``(Category, SubCategory, Name)`` triple misses, provided the Name maps
+        to exactly one installed proxy. Set False to require an exact triple
+        match (the original, stricter behaviour).
 
     Returns
     -------
@@ -1206,6 +1246,7 @@ def upgrade_components(
             repr(list(only_nicknames)) if only_nicknames is not None else "None",
         )
         .replace("__DRY_RUN__", repr(bool(dry_run)))
+        .replace("__MATCH_BY_NAME__", repr(bool(match_by_name)))
     )
     return run_python_script(_UI_THREAD_BOOTSTRAP + script_body)
 

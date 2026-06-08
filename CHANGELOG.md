@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+* `upgrade_components` now matches Rhino 8 RhinoCode *script* components, which
+  report a generic `Maths`/`Script` category on the canvas that never equals
+  their installed userobject proxy's (e.g. `COMPAS FAB`/`Robot Cell`) — and can
+  even differ between freshly-dropped and saved instances. When the
+  `(Category, SubCategory, Name)` triple misses, the tool falls back to matching
+  by `Name` alone (only when that Name maps to exactly one installed proxy, so an
+  unrelated generic script is never swapped by accident), and applies
+  `only_categories` against the resolved **proxy's** category so
+  `["COMPAS FAB"]` still selects them. New `match_by_name` parameter (default
+  `True`) toggles the fallback; each `updated` entry now reports whether it
+  matched `by` `"triple"` or `"name"`.
+
 ## [0.6.1] - 2026-06-04
 
 ### Fixed
