@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.7.0] - 2026-06-12
+
+### Added
+
+* New `capture_grasshopper_canvas` and `capture_rhino_viewport` tools. The first
+  screenshots the Grasshopper canvas (the wiring — framed to fit all objects,
+  with the live pan/zoom restored afterwards); the second screenshots the active
+  Rhino viewport (the 3D result) at a requested resolution. Both run on the UI
+  thread and return the PNG inline as an MCP image, with an optional `path` to
+  also write the file to disk.
 
 ### Changed
 

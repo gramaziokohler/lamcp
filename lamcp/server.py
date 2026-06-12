@@ -31,12 +31,14 @@ read) do not need it.
 
 from __future__ import annotations
 
+import ast
 import base64
 import os
 import uuid
 
 import httpx
 from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
 
 BRIDGE_URL = os.environ.get("LAMCP_BRIDGE_URL", "http://127.0.0.1:8765")
 DEFAULT_TIMEOUT = 30.0
@@ -1249,6 +1251,155 @@ def upgrade_components(
         .replace("__MATCH_BY_NAME__", repr(bool(match_by_name)))
     )
     return run_python_script(_UI_THREAD_BOOTSTRAP + script_body)
+
+
+# ---------------------------------------------------------------------------
+# Screen capture
+# ---------------------------------------------------------------------------
+# Both captures render UI surfaces (the GH canvas control / the Rhino view) and
+# therefore run on the UI thread via ``_lamcp_run_on_ui``. The Rhino-side code
+# encodes the PNG as base64 and assigns it to ``_``; the bridge returns
+# ``repr(_)``, which the tool un-reprs, decodes, and returns as an inline
+# ``Image`` (optionally also writing it to ``path``).
+
+_CAPTURE_CANVAS_SCRIPT = '''
+import Grasshopper, base64
+from System.Drawing import Bitmap, Rectangle, Point
+from System.Drawing.Imaging import ImageFormat
+from System.IO import MemoryStream
+
+def _capture():
+    canvas = Grasshopper.Instances.ActiveCanvas
+    if canvas is None:
+        raise Exception("No active Grasshopper canvas.")
+    doc = canvas.Document
+    vp = canvas.Viewport
+    saved_target, saved_zoom = vp.Target, vp.Zoom
+    try:
+        if __ZOOM__ and doc is not None and doc.ObjectCount > 0:
+            r = doc.BoundingBox()
+            if r.Width > 0 and r.Height > 0:
+                vp.Target = Point(int(r.X + r.Width / 2.0), int(r.Y + r.Height / 2.0))
+                cw, ch = float(canvas.Width), float(canvas.Height)
+                pad = float(__PAD__)
+                z = min((cw - 2.0 * pad) / r.Width, (ch - 2.0 * pad) / r.Height)
+                vp.Zoom = max(0.05, min(z, 1.0))
+        w, h = int(canvas.Width), int(canvas.Height)
+        bmp = Bitmap(w, h)
+        canvas.DrawToBitmap(bmp, Rectangle(0, 0, w, h))
+    finally:
+        vp.Target = saved_target
+        vp.Zoom = saved_zoom
+        canvas.Refresh()
+    ms = MemoryStream()
+    bmp.Save(ms, ImageFormat.Png)
+    return base64.b64encode(ms.ToArray()).decode("ascii")
+
+_ = _lamcp_run_on_ui(_capture)
+'''
+
+_CAPTURE_VIEWPORT_SCRIPT = '''
+import Rhino, System, base64
+from System.Drawing.Imaging import ImageFormat
+from System.IO import MemoryStream
+
+def _capture():
+    doc = Rhino.RhinoDoc.ActiveDoc
+    if doc is None:
+        raise Exception("No active Rhino document.")
+    view = doc.Views.ActiveView
+    if view is None:
+        raise Exception("No active Rhino view.")
+    bmp = view.CaptureToBitmap(System.Drawing.Size(__W__, __H__))
+    if bmp is None:
+        raise Exception("CaptureToBitmap returned None.")
+    ms = MemoryStream()
+    bmp.Save(ms, ImageFormat.Png)
+    return base64.b64encode(ms.ToArray()).decode("ascii")
+
+_ = _lamcp_run_on_ui(_capture)
+'''
+
+
+def _decode_capture(response: dict, save_path: str | None) -> Image:
+    """Turn a bridge response carrying a base64 PNG (as ``repr``) into an Image."""
+    if response.get("error"):
+        raise RuntimeError("Capture failed in Rhino:\n{}".format(response["error"]))
+    result = response.get("result")
+    if not result or result == "None":
+        raise RuntimeError(
+            "Capture returned no image (stderr: {!r}).".format(response.get("stderr"))
+        )
+    data = base64.b64decode(ast.literal_eval(result))  # `result` is repr(<base64 str>)
+    if save_path:
+        path = os.path.expanduser(save_path)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(data)
+    return Image(data=data, format="png")
+
+
+@mcp.tool()
+def capture_grasshopper_canvas(
+    path: str | None = None, zoom_extents: bool = True, padding: int = 40
+) -> Image:
+    """Capture the active Grasshopper canvas (the wiring) as a PNG.
+
+    Returns the image inline so it can be inspected directly. By default the view
+    is framed to fit every object on the canvas before capturing; the live
+    pan/zoom is restored afterwards, so the user's view is left untouched. Runs
+    on Rhino's UI thread (canvas painting is not thread-safe).
+
+    The capture resolution follows the Grasshopper canvas control size, so a
+    larger Grasshopper window yields a larger image.
+
+    Parameters
+    ----------
+    path : str, optional
+        If given, the PNG is also written to this path (on the machine running
+        Rhino / this server).
+    zoom_extents : bool, optional
+        Frame all objects before capturing (default True), then restore the view.
+    padding : int, optional
+        Pixels of margin around the framed graph when ``zoom_extents`` is set.
+
+    Returns
+    -------
+    Image
+        The canvas as a PNG.
+    """
+    code = _UI_THREAD_BOOTSTRAP + _CAPTURE_CANVAS_SCRIPT.replace(
+        "__ZOOM__", repr(bool(zoom_extents))
+    ).replace("__PAD__", repr(int(padding)))
+    return _decode_capture(run_python_script(code, timeout=30.0), path)
+
+
+@mcp.tool()
+def capture_rhino_viewport(
+    path: str | None = None, width: int = 1600, height: int = 1000
+) -> Image:
+    """Capture the active Rhino viewport (the 3D result) as a PNG.
+
+    Renders the active Rhino view at the requested resolution — e.g. a robot
+    drawn by a Grasshopper definition — and returns it inline. Runs on Rhino's
+    UI thread.
+
+    Parameters
+    ----------
+    path : str, optional
+        If given, the PNG is also written to this path.
+    width, height : int, optional
+        Capture resolution in pixels (default 1600x1000).
+
+    Returns
+    -------
+    Image
+        The viewport as a PNG.
+    """
+    code = _UI_THREAD_BOOTSTRAP + _CAPTURE_VIEWPORT_SCRIPT.replace(
+        "__W__", repr(int(width))
+    ).replace("__H__", repr(int(height)))
+    return _decode_capture(run_python_script(code, timeout=30.0), path)
 
 
 def main():
