@@ -1262,7 +1262,7 @@ def upgrade_components(
 # ``repr(_)``, which the tool un-reprs, decodes, and returns as an inline
 # ``Image`` (optionally also writing it to ``path``).
 
-_CAPTURE_CANVAS_SCRIPT = '''
+_CAPTURE_CANVAS_SCRIPT = """
 import Grasshopper, base64
 from System.Drawing import Bitmap, Rectangle, Point
 from System.Drawing.Imaging import ImageFormat
@@ -1296,9 +1296,9 @@ def _capture():
     return base64.b64encode(ms.ToArray()).decode("ascii")
 
 _ = _lamcp_run_on_ui(_capture)
-'''
+"""
 
-_CAPTURE_VIEWPORT_SCRIPT = '''
+_CAPTURE_VIEWPORT_SCRIPT = """
 import Rhino, System, base64
 from System.Drawing.Imaging import ImageFormat
 from System.IO import MemoryStream
@@ -1318,7 +1318,7 @@ def _capture():
     return base64.b64encode(ms.ToArray()).decode("ascii")
 
 _ = _lamcp_run_on_ui(_capture)
-'''
+"""
 
 
 def _decode_capture(response: dict, save_path: str | None) -> Image:
