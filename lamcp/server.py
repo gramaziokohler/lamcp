@@ -89,32 +89,8 @@ _UI_THREAD_BOOTSTRAP = (
 mcp = FastMCP("lamcp")
 
 
-@mcp.tool()
-def run_python_script(code: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
-    """Execute Python code inside the running Rhino 8 instance.
-
-    The code runs in Rhino 8's CPython 3.9 runtime with full access to
-    RhinoCommon and Grasshopper APIs (active document, GH component
-    lookup, slider mutation, etc.). A shared globals dict persists across
-    calls so state accumulates (e.g., ``import`` once, reuse the binding
-    on later calls).
-
-    To return a value, assign it to ``_`` — the bridge returns ``repr(_)``.
-
-    Parameters
-    ----------
-    code : str
-        Python source to execute inside Rhino.
-    timeout : float, optional
-        Max seconds to wait for the execution to complete.
-
-    Returns
-    -------
-    dict
-        ``{"stdout": str, "stderr": str, "result": str|None, "error": str|None}``.
-        ``result`` is ``repr(_)`` if ``_`` was assigned, else ``"None"``.
-        ``error`` is a formatted traceback if the script raised, else ``None``.
-    """
+def _post(code: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
+    """Send ``code`` to the bridge, which executes it on its HTTP server thread."""
     try:
         with httpx.Client(base_url=BRIDGE_URL, timeout=timeout + 5) as client:
             response = client.post("/exec", json={"code": code, "timeout": timeout})
@@ -127,6 +103,61 @@ def run_python_script(code: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
             "result": None,
             "error": "Failed to reach LAMCP bridge at {}: {!r}".format(BRIDGE_URL, exc),
         }
+
+
+def _on_ui_thread(code: str, timeout: float) -> str:
+    """Wrap ``code`` so that the bridge runs it on Rhino's UI thread.
+
+    The code is compiled and executed in the shared bridge globals, so imports,
+    variables, and ``_`` persist exactly as when it runs on the HTTP thread.
+    Output printed on the UI thread is captured, because the HTTP thread keeps
+    ``sys.stdout`` redirected while it waits.
+    """
+    return _UI_THREAD_BOOTSTRAP + (
+        "_lamcp_run_on_ui(lambda: exec(compile({code!r}, '<lamcp>', 'exec'), globals()), timeout={timeout!r})\n"
+    ).format(code=code, timeout=timeout)
+
+
+@mcp.tool()
+def run_python_script(
+    code: str, timeout: float = DEFAULT_TIMEOUT, ui_thread: bool = False
+) -> dict:
+    """Execute Python code inside the running Rhino 8 instance.
+
+    The code runs in Rhino 8's CPython 3.9 runtime with full access to
+    RhinoCommon and Grasshopper APIs (active document, GH component
+    lookup, slider mutation, etc.). A shared globals dict persists across
+    calls so state accumulates (e.g., ``import`` once, reuse the binding
+    on later calls).
+
+    To return a value, assign it to ``_`` — the bridge returns ``repr(_)``.
+
+    By default the code runs on the bridge's background (HTTP) thread, which
+    keeps Rhino responsive and is robust for reading and computing. Code that
+    changes the document, runs commands, or touches the user interface,
+    including indirectly through a library (for example one that calls
+    ``RhinoApp.RunScript``), must run on Rhino's UI thread: set ``ui_thread``
+    to true. Doing it from the background thread can hard-crash Rhino.
+
+    Parameters
+    ----------
+    code : str
+        Python source to execute inside Rhino.
+    timeout : float, optional
+        Max seconds to wait for the execution to complete.
+    ui_thread : bool, optional
+        Run the code on Rhino's UI thread, like code run from the script
+        editor, instead of the background thread. The Rhino user interface
+        is blocked while the code runs.
+
+    Returns
+    -------
+    dict
+        ``{"stdout": str, "stderr": str, "result": str|None, "error": str|None}``.
+        ``result`` is ``repr(_)`` if ``_`` was assigned, else ``"None"``.
+        ``error`` is a formatted traceback if the script raised, else ``None``.
+    """
+    return _post(_on_ui_thread(code, timeout) if ui_thread else code, timeout)
 
 
 @mcp.tool()
@@ -162,7 +193,7 @@ def unload_python_modules(prefix: str) -> dict:
         "for n in to_drop: del sys.modules[n]\n"
         "_ = {{'unloaded': sorted(to_drop), 'count': len(to_drop)}}\n"
     ).format(prefix)
-    return run_python_script(code)
+    return _post(code)
 
 
 @mcp.tool()
@@ -221,7 +252,7 @@ def list_grasshopper_objects() -> dict:
         "    'count': len(objs), 'objects': objs,\n"
         "}\n"
     )
-    return run_python_script(code)
+    return _post(code)
 
 
 def _build_script_component_xml(code, name, inputs, outputs, x, y):
@@ -455,7 +486,7 @@ def add_python_component(
         "    return {'added': added, 'read_ok': ok, 'guid': str(comp.InstanceGuid), 'name': comp.NickName}\n"
         "_ = _lamcp_run_on_ui(_do)\n"
     )
-    return run_python_script(snippet)
+    return _post(snippet)
 
 
 @mcp.tool()
@@ -664,7 +695,7 @@ def set_script_venv(
         "            'already_ok': already, 'skipped': skipped, 'errors': errors}\n"
         "_ = _lamcp_run_on_ui(_do)\n"
     )
-    return run_python_script(code)
+    return _post(code)
 
 
 @mcp.tool()
@@ -701,7 +732,7 @@ def solve_grasshopper(expire_all: bool = False) -> dict:
         "    return {'scheduled': True, 'expired_all': expire_all}\n"
         "_ = _lamcp_run_on_ui(_do)\n"
     )
-    return run_python_script(code)
+    return _post(code)
 
 
 @mcp.tool()
@@ -737,7 +768,7 @@ def save_grasshopper_document(path: str | None = None) -> dict:
         "    return {'saved': saved, 'path': path, 'bytes': size, 'error': err}\n"
         "_ = _lamcp_run_on_ui(_do)\n"
     )
-    return run_python_script(code)
+    return _post(code)
 
 
 _PARAM_MARKER_TYPES = {
@@ -823,7 +854,7 @@ def add_group(
         "    return {'guid': str(g.InstanceGuid), 'name': g.NickName, 'member_count': len(list(g.ObjectIDs))}\n"
         "_ = _lamcp_run_on_ui(_do)\n"
     )
-    return run_python_script(code)
+    return _post(code)
 
 
 @mcp.tool()
@@ -895,7 +926,7 @@ def add_param_marker(
         "    return {'guid': str(p.InstanceGuid), 'name': p.NickName, 'type': p.GetType().Name}\n"
         "_ = _lamcp_run_on_ui(_do)\n"
     )
-    return run_python_script(code)
+    return _post(code)
 
 
 @mcp.tool()
@@ -969,7 +1000,7 @@ def describe_canvas_structure() -> dict:
         "    'count': len(objs), 'objects': objs,\n"
         "}\n"
     )
-    return run_python_script(code)
+    return _post(code)
 
 
 _UPGRADE_COMPONENTS_SCRIPT = """
@@ -1250,7 +1281,7 @@ def upgrade_components(
         .replace("__DRY_RUN__", repr(bool(dry_run)))
         .replace("__MATCH_BY_NAME__", repr(bool(match_by_name)))
     )
-    return run_python_script(_UI_THREAD_BOOTSTRAP + script_body)
+    return _post(_UI_THREAD_BOOTSTRAP + script_body)
 
 
 # ---------------------------------------------------------------------------
@@ -1393,7 +1424,7 @@ def search_components(
     ).replace("__LIMIT__", repr(max(1, int(limit)))).replace(
         "__OBSOLETE__", repr(bool(include_obsolete))
     )
-    return run_python_script(code, timeout=DEFAULT_TIMEOUT)
+    return _post(code, timeout=DEFAULT_TIMEOUT)
 
 
 _INSPECT_DATA_SCRIPT = """
@@ -1522,7 +1553,7 @@ def inspect_component_data(
     ).replace("__MAX_ITEMS__", repr(max(1, int(max_items)))).replace(
         "__INCLUDE_INPUTS__", repr(bool(include_inputs))
     )
-    return run_python_script(code, timeout=DEFAULT_TIMEOUT)
+    return _post(code, timeout=DEFAULT_TIMEOUT)
 
 
 # ---------------------------------------------------------------------------
@@ -1681,7 +1712,7 @@ def capture_grasshopper_canvas(
     code = _UI_THREAD_BOOTSTRAP + _CAPTURE_CANVAS_SCRIPT.replace(
         "__ZOOM__", repr(bool(zoom_extents))
     ).replace("__PAD__", repr(int(padding)))
-    return _decode_capture(run_python_script(code, timeout=30.0), path)
+    return _decode_capture(_post(code, timeout=30.0), path)
 
 
 @mcp.tool()
@@ -1730,7 +1761,7 @@ def capture_rhino_viewport(
     ).replace("__H__", repr(int(height))).replace("__VIEW__", repr(view)).replace(
         "__ZOOM__", repr(bool(zoom_extents))
     )
-    return _decode_capture(run_python_script(code, timeout=30.0), path)
+    return _decode_capture(_post(code, timeout=30.0), path)
 
 
 def main():

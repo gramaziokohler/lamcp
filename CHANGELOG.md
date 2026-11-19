@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+* `run_python_script` gained a `ui_thread` parameter that runs the code on
+  Rhino's UI thread, through the same marshalling as the document-mutating
+  tools. Use it for code that changes the document, runs commands, or touches
+  the user interface, for example a library calling `RhinoApp.RunScript`,
+  which crashes Rhino when run from the bridge's background thread. Code still
+  runs on the background thread by default.
+
 ## [0.8.0] - 2026-08-27
 
 ### Added

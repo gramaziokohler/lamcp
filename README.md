@@ -169,10 +169,12 @@ print(doc.Name)   # `doc` is still bound
 
 ## Caveats
 
-- **UI thread**: code runs on the HTTP server thread, not the Rhino UI
-  thread. Most read-only `RhinoCommon` / `Grasshopper` access works
-  cross-thread, but heavy mutations (bulk `RemoveObject`, etc.) can crash
-  Rhino. Eto-based UI marshalling is a planned addition.
+- **UI thread**: `run_python_script` runs code on the bridge's background
+  (HTTP) thread by default. Document changes, commands, or user-interface
+  access from that thread can crash Rhino, including indirectly through
+  libraries that call `RhinoApp.RunScript`. Pass `ui_thread=True` to run such
+  code on Rhino's UI thread, like the script editor; the Rhino user interface
+  is blocked while it runs.
 - **`isinstance` doesn't always work**: in Rhino 8 CPython, `isinstance`
   against concrete .NET types often returns False due to interface interop.
   Use `obj.GetType().Name == "..."` instead.
