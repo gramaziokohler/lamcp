@@ -1,0 +1,19 @@
+---
+# Yak (Rhino Package Manager) manifest. `version` is overwritten from
+# pyproject.toml by the release workflow.
+name: lamcp
+version: 0.9.0
+authors:
+- Gramazio Kohler Research, ETH Zürich
+description: >
+  LAMCP bridge for Rhino 8: lets Claude Code (or any MCP client) run Python
+  inside your live Rhino session. Starts automatically with Rhino, no
+  Grasshopper needed. Commands: Lamcp (toggle), LamcpStart, LamcpStop,
+  LamcpAutoStart. Pair with the `lamcp` MCP server (`uvx lamcp`).
+url: https://github.com/gramaziokohler/lamcp
+keywords:
+- mcp
+- claude
+- llm
+- python
+- grasshopper

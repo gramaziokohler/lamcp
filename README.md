@@ -116,6 +116,44 @@ The new tools are available in any new Claude Code conversation.
 3. Wire a `Boolean Toggle` (set to `True`) into `enable`.
 4. The `status` output should read `listening on http://127.0.0.1:8765`.
 
+**Option C — install the Rhino plugin (no Grasshopper, starts with Rhino).**
+
+1. In Rhino, open the *Package Manager* (`_PackageManager`), search for
+   `lamcp` and install it. Or download `lamcp-*.yak` from the
+   [latest release](https://github.com/gramaziokohler/lamcp/releases/latest)
+   and install it with
+   `"C:\Program Files\Rhino 8\System\Yak.exe" install path\to\lamcp-X.Y.Z-rh8_0-win.yak`.
+2. Restart Rhino. The bridge now starts automatically every time Rhino
+   launches. The command line shows
+   `LAMCP bridge listening on http://127.0.0.1:8765`.
+
+Commands: `Lamcp` (toggle on/off), `LamcpStart`, `LamcpStop`, and
+`LamcpAutoStart` (turn start-with-Rhino off or back on).
+
+**Option D — run the script yourself (no plugin install).**
+
+1. Download `lamcp_bridge.py` from the [latest release](https://github.com/gramaziokohler/lamcp/releases/latest)
+   (or use [`rhino/lamcp_bridge.py`](rhino/lamcp_bridge.py) from this repo)
+   and save it somewhere permanent.
+2. Run it from Rhino's command line:
+
+   ```text
+   _-ScriptEditor _Run "C:\path\to\lamcp_bridge.py"
+   ```
+
+   It prints `LAMCP bridge listening on http://127.0.0.1:8765`. Running it
+   again stops the server.
+3. **Start on launch:** paste the same line into *Rhino Options → General →
+   Command Lists* ("Run these commands every time Rhino starts").
+4. **Short command (optional):** in *Rhino Options → Aliases*, add e.g.
+   `Lamcp` → `_-ScriptEditor _Run "C:\path\to\lamcp_bridge.py"`.
+
+For options C and D: set the `LAMCP_PORT` environment variable to use a
+port other than 8765. Don't run this and the Grasshopper component on the
+same port at once. The
+Grasshopper tools (`list_grasshopper_objects` etc.) still need Grasshopper
+open; `run_python_script` and the Rhino tools work without it.
+
 Either way, your MCP client now has a `run_python_script` tool that
 exec()s code inside your live Rhino session.
 

@@ -55,3 +55,32 @@ jobs:
           name: Lamcp_Bridge-ghuser
           path: dist/*.ghuser
           if-no-files-found: error
+
+  build-rhino-plugin:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build Lamcp.rhp and yak package
+        shell: pwsh
+        run: |
+          $version = python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          dotnet build rhino/plugin/Lamcp.csproj -c Release -p:Version=$version
+          New-Item -ItemType Directory -Force yakdist | Out-Null
+          Copy-Item rhino/plugin/bin/Release/net48/Lamcp.rhp yakdist/
+          (Get-Content rhino/plugin/manifest.yml) -replace '^version: .*', "version: $version" |
+            Set-Content -Encoding utf8NoBOM yakdist/manifest.yml
+          Invoke-WebRequest https://files.mcneel.com/yak/tools/latest/yak.exe -OutFile yak.exe
+          Push-Location yakdist; ..\yak.exe build --platform win; Pop-Location
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lamcp-rhino-plugin
+          path: |
+            yakdist/*.yak
+            yakdist/*.rhp
+          if-no-files-found: error

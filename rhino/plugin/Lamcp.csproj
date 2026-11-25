@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    LAMCP Rhino plugin: loads at Rhino startup and starts the LAMCP bridge
+    (../lamcp_bridge.py, embedded below) so Grasshopper doesn't have to be open.
+
+    Build:  dotnet build -c Release
+    Output: bin/Release/net48/Lamcp.rhp
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <TargetExt>.rhp</TargetExt>
+    <AssemblyName>Lamcp</AssemblyName>
+    <RootNamespace>Lamcp</RootNamespace>
+    <Version>0.9.0</Version>
+    <Title>LAMCP</Title>
+    <Company>Gramazio Kohler Research, ETH Zürich</Company>
+    <Description>Starts the LAMCP bridge inside Rhino at startup.</Description>
+    <LangVersion>latest</LangVersion>
+    <NoWarn>$(NoWarn);NU1701</NoWarn>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <!-- Keep the version plain (no +githash) so it matches the yak manifest. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Compile against Rhino 8. ExcludeAssets=runtime: Rhino provides it. -->
+    <PackageReference Include="RhinoCommon" Version="8.0.23304.9001" ExcludeAssets="runtime" />
+    <!-- Lets the net48 target build without the .NET Framework targeting pack installed. -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Single source of truth for the bridge: the standalone Rhino script. -->
+    <EmbeddedResource Include="..\lamcp_bridge.py" LogicalName="Lamcp.lamcp_bridge.py" />
+  </ItemGroup>
+
+</Project>

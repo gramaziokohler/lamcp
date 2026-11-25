@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+* `rhino/lamcp_bridge.py`: the bridge as a plain Rhino script, so it can run
+  without opening Grasshopper, from an alias or at Rhino startup. Running it
+  again stops the server. Shipped as a release asset.
+* `Lamcp.rhp` Rhino plugin, packaged for the Rhino Package Manager (`.yak`).
+  It loads at Rhino startup and starts the bridge automatically, and adds
+  the `Lamcp`, `LamcpStart`, `LamcpStop` and `LamcpAutoStart` commands.
+
 ## [0.9.0] - 2026-11-19
 
 ### Added

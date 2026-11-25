@@ -30,3 +30,10 @@ env/
 # Built Grasshopper user objects (these are release artifacts, not source)
 *.ghuser
 grasshopper/**/__pycache__/
+
+# Rhino plugin build output
+rhino/plugin/bin/
+rhino/plugin/obj/
+rhino/plugin/yakdist/
+*.rhp
+*.yak

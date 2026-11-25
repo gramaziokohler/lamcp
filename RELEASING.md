@@ -25,6 +25,14 @@ Optionally add deployment protection rules (required reviewers, branch
 restrictions). The `publish-pypi` job in `.github/workflows/release.yml`
 runs in this environment.
 
+### 3. (Optional) Rhino package server token
+
+To publish the Rhino plugin to the Rhino Package Manager automatically,
+run `yak login --ci` once on a machine with
+[`yak.exe`](https://files.mcneel.com/yak/tools/latest/yak.exe) and store the
+printed token as the `YAK_TOKEN` repository secret. Without it, the `.yak`
+package is still attached to the GitHub release.
+
 ## Cutting a release
 
 1. Update `CHANGELOG.md`:
@@ -52,6 +60,9 @@ runs in this environment.
     * Builds the Python sdist + wheel
     * Builds `Lamcp_Bridge.ghuser` on Windows via
       `compas-dev/compas-actions.ghpython_components`
+    * Builds the `Lamcp.rhp` Rhino plugin into a `.yak` package (version
+      taken from `pyproject.toml`) and, if `YAK_TOKEN` is set, pushes it
+      to the Rhino package server
     * Publishes the wheel + sdist to PyPI via OIDC
     * Creates a GitHub release with auto-generated notes, attaching the
       wheel, sdist, and `Lamcp_Bridge.ghuser` as downloadable assets
